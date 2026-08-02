@@ -1,0 +1,100 @@
+[project]
+name = "obs-automation"
+dynamic = ["version"]
+description = "Headless package bumping and automation for OBS based on Anitya release monitoring."
+readme = "README.md"
+requires-python = "~=3.13.0"
+license = "MIT"
+authors = [
+    { name = "SUSE LLC" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "httpx",
+    "tenacity",
+    "typer",
+]
+
+[project.urls]
+Homepage = "https://github.com/okurz/obs-automation"
+
+[project.scripts]
+auto-bump = "obs_automation.main:app"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-env",
+    "pytest-xdist",
+    "pyupgrade",
+    "coverage",
+    "responses",
+    "ruff",
+    "pytest-mock",
+    "vulture",
+    "ty",
+    "pre-commit",
+    "gitlint",
+]
+
+[tool.coverage.run]
+source = ["obs_automation"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+
+[tool.pytest.ini_options]
+addopts = "-p no:anyio -p no:doctest -p no:pastebin -p no:nose"
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.setuptools]
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.packages]
+find = {}
+
+[tool.ruff]
+line-length = 120
+exclude = ['metadata']
+preview = true
+
+[tool.ruff.lint]
+extend-select =[
+    "E", "F", "D", "Q", "PL", "W", "I", "ERA", "B", "SIM", "C4", "T10", "FIX", "ISC", "ICN", "INP", "PIE", "T20", "RSE", "RET", "SLF", "FURB", "EXE", "BLE", "A", "DTZ", "LOG", "G", "C90", "PERF", "PGH", "ARG", "RUF", "S", "FBT", "TRY", "YTT", "ASYNC", "COM", "CPY", "EM", "INT", "PYI", "PT", "SLOT", "TID", "TCH", "PTH", "FLY", "NPY", "PD", "N", "PLE", "PLR", "PLW", "FA", "UP", "PLR0915"
+]
+
+ignore = [
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",
+    "T201", "S603", "CPY001", 
+    "TRY003", "EM101", "EM102", "BLE001", "PLR2004", "S607", "FBT001", "FBT002", "TRY301", "PLR0915", "S404",
+    "G004", "PERF203", "COM812", "ISC001"
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "PLR2004", "D", "ARG", "PT", "PLC2701"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint.flake8-copyright]
+author = "SUSE LLC"
+notice-rgx = "Copyright"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"os.system".msg = "Use `subprocess.run` or `sh` library instead."
+"subprocess.call".msg = "Use `subprocess.run` with `check=True`."
+
+[tool.ty.terminal]
+error-on-warning = true

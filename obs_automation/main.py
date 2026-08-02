@@ -1,10 +1,11 @@
-#!/usr/bin/env python3
+"""OBS automation tooling for headless package bumping."""
 
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 import typer
@@ -13,8 +14,9 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 app = typer.Typer()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2), reraise=True)
 def fetch_latest_version(anitya_id: str) -> str:
+    """Fetch the latest version of a project from Anitya."""
     print(f"Fetching latest version for Anitya ID {anitya_id}...")
     url = f"https://release-monitoring.org/api/project/{anitya_id}"
     resp = httpx.get(url, timeout=10.0)
@@ -22,12 +24,25 @@ def fetch_latest_version(anitya_id: str) -> str:
     version = resp.json().get("version")
     if not version:
         raise ValueError("Anitya API returned empty version")
-    return version
+    return str(version)
 
 
-def run_cmd(cmd: list[str], check: bool = True, **kwargs):
-    print(f"Running: {' '.join(cmd)}")
+def run_cmd(
+    cmd: list[str],
+    check: bool = True,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    """Run a subprocess command safely."""
+    print(f"Running: {" ".join(cmd)}")
     return subprocess.run(cmd, check=check, text=True, **kwargs)
+
+
+def _get_branch_project(stdout: str) -> str | None:
+    for line in stdout.splitlines():
+        match = re.search(r"([^\s:]+:[^\s]+)/[^\s]+", line)
+        if match:
+            return match.group(1)
+    return None
 
 
 @app.command()
@@ -35,7 +50,8 @@ def main(
     project: str = typer.Option(..., help="Main OBS project (e.g. Cloud:Tools)"),
     package: str = typer.Option(..., help="OBS package name (e.g. cf-cli)"),
     anitya_id: str = typer.Option(..., help="Anitya project ID"),
-):
+) -> None:
+    """Run the OBS auto-bump process."""
     try:
         latest_tag = fetch_latest_version(anitya_id)
         if not latest_tag.startswith("v"):
@@ -48,31 +64,26 @@ def main(
         branch_project = None
         try:
             branch_res = run_cmd(
-                ["osc", "branch", project, package], capture_output=True
+                ["osc", "branch", project, package],
+                capture_output=True,
             )
-            for line in branch_res.stdout.splitlines():
-                match = re.search(rf"([^\s:]+:[^\s]+)/{package}", line)
-                if match:
-                    branch_project = match.group(1)
-                    break
+            branch_project = _get_branch_project(branch_res.stdout)
         except subprocess.CalledProcessError as e:
             # Check if it failed because it already exists
             for line in e.stderr.splitlines():
                 if "already exists:" in line:
-                    match = re.search(rf"([^\s:]+:[^\s]+)/{package}", line)
-                    if match:
-                        branch_project = match.group(1)
-                        break
+                    branch_project = _get_branch_project(line)
+                    break
             if not branch_project:
                 print(f"Failed to branch: {e.stderr}")
-                sys.exit(1)
+                raise typer.Exit(code=1) from None
 
         if not branch_project:
             # Fallback if parsing fails (assume standard home:USER:branches:...)
             user = os.environ.get("OBS_USER")
             if not user:
                 print("Could not parse branched project name and OBS_USER not set.")
-                sys.exit(1)
+                raise typer.Exit(code=1) from None
             branch_project = f"home:{user}:branches:{project}"
 
         print(f"Working with branched project: {branch_project}")
@@ -86,15 +97,16 @@ def main(
         service_file = Path("_service")
         if not service_file.exists():
             print("_service file not found!")
-            sys.exit(1)
+            raise typer.Exit(code=1) from None
 
         content = service_file.read_text()
         current_tag_match = re.search(
-            r'<param name="revision">([^<]+)</param>', content
+            r'<param name="revision">([^<]+)</param>',
+            content,
         )
         if not current_tag_match:
             print("Could not find current revision in _service file.")
-            sys.exit(1)
+            raise typer.Exit(code=1) from None
 
         current_tag = current_tag_match.group(1)
         print(f"Current OBS version: {current_tag}")
@@ -127,14 +139,16 @@ def main(
                 "sr",
                 "-m",
                 f"Automated update to {latest_tag} based on Anitya release monitoring",
-            ]
+            ],
         )
         print("Done!")
 
+    except typer.Exit as e:
+        sys.exit(e.exit_code)
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     app()

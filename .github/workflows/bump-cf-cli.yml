@@ -9,11 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     container: opensuse/tumbleweed
     steps:
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           zypper ref
-          zypper in -y osc jq curl sed obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress build git-core python3-pip
-          pip install --break-system-packages httpx tenacity typer
+          zypper in -y osc jq curl sed obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress build git-core
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
 
       - name: Configure OBS Credentials
         run: |
@@ -32,4 +34,4 @@ jobs:
       - name: Run Auto-bump script
         env:
           OBS_USER: ${{ secrets.OBS_USER }}
-        run: ./auto_bump.py --project Cloud:Tools --package cf-cli --anitya-id 385503
+        run: ~/.local/bin/uv run auto-bump --project Cloud:Tools --package cf-cli --anitya-id 385503
