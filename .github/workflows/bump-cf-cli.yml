@@ -12,7 +12,8 @@ jobs:
       - name: Install dependencies
         run: |
           zypper ref
-          zypper in -y osc jq curl sed obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress build git-core
+          zypper in -y osc jq curl sed obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress build git-core python3-pip
+          pip install --break-system-packages httpx tenacity typer
 
       - name: Configure OBS Credentials
         run: |
@@ -29,4 +30,6 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Run Auto-bump script
-        run: bash ./auto-bump.sh
+        env:
+          OBS_USER: ${{ secrets.OBS_USER }}
+        run: ./auto_bump.py --project Cloud:Tools --package cf-cli --anitya-id 385503
