@@ -1,0 +1,32 @@
+name: Auto-bump cf-cli
+on:
+  schedule:
+    - cron: '0 4 * * *' # Run daily at 04:00 UTC
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  update-package:
+    runs-on: ubuntu-latest
+    container: opensuse/tumbleweed
+    steps:
+      - name: Install dependencies
+        run: |
+          zypper ref
+          zypper in -y osc jq curl sed obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress build git-core
+
+      - name: Configure OBS Credentials
+        run: |
+          mkdir -p ~/.config/osc
+          cat <<EOF > ~/.config/osc/oscrc
+          [general]
+          apiurl = https://api.opensuse.org
+          [https://api.opensuse.org]
+          user = ${{ secrets.OBS_USER }}
+          pass = ${{ secrets.OBS_PASSWORD }}
+          EOF
+
+      - name: Checkout automation repository
+        uses: actions/checkout@v3
+
+      - name: Run Auto-bump script
+        run: bash ./auto-bump.sh
