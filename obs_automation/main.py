@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -180,62 +181,59 @@ def process_package(
     log_step(f"Working with branched project: {branch_project}")
 
     log_step("Checking out OBS package...")
-    # Save current working directory so we can return if looping over multiple packages
-    original_cwd = Path.cwd()
-    workdir = Path(f"{branch_project}/{package}")
+    workdir = Path(branch_project) / package
 
     if workdir.exists():
         run_cmd(["osc", "update"], cwd=str(workdir))
     else:
+        # Check out into the branch_project directory
         run_cmd(["osc", "checkout", branch_project, package])
 
-    os.chdir(workdir)
+    service_file = workdir / "_service"
+    if not service_file.exists():
+        raise RuntimeError("_service file not found!")
 
-    try:
-        service_file = Path("_service")
-        if not service_file.exists():
-            raise RuntimeError("_service file not found!")
+    content = service_file.read_text()
+    current_tag_match = re.search(r'<param name="revision">([^<]+)</param>', content)
+    if not current_tag_match:
+        raise RuntimeError("Could not find current revision in _service file.")
 
-        content = service_file.read_text()
-        current_tag_match = re.search(r'<param name="revision">([^<]+)</param>', content)
-        if not current_tag_match:
-            raise RuntimeError("Could not find current revision in _service file.")
+    current_tag = current_tag_match.group(1)
+    log_step(f"Current OBS version: {current_tag}")
 
-        current_tag = current_tag_match.group(1)
-        log_step(f"Current OBS version: {current_tag}")
+    if current_tag == latest_tag:
+        log_step("Package is already up to date. Skipping.")
+        return "Skipped"
 
-        if current_tag == latest_tag:
-            log_step("Package is already up to date. Skipping.")
-            return "Skipped"
+    log_step(f"Updating _service file to {latest_tag}...")
+    new_content = re.sub(
+        r'<param name="revision">[^<]+</param>',
+        f'<param name="revision">{latest_tag}</param>',
+        content,
+    )
+    service_file.write_text(new_content)
 
-        log_step(f"Updating _service file to {latest_tag}...")
-        new_content = re.sub(
-            r'<param name="revision">[^<]+</param>',
-            f'<param name="revision">{latest_tag}</param>',
-            content,
-        )
-        service_file.write_text(new_content)
+    log_step("Running OBS services locally to generate tarballs and spec updates...")
+    run_cmd(["osc", "service", "ra"], cwd=str(workdir))
 
-        log_step("Running OBS services locally to generate tarballs and spec updates...")
-        run_cmd(["osc", "service", "ra"])
+    log_step("Cleaning up old tracked files and adding new ones...")
+    run_cmd(["osc", "addremove"], cwd=str(workdir))
 
-        log_step("Cleaning up old tracked files and adding new ones...")
-        run_cmd(["osc", "addremove"])
+    log_step(f"Committing to {branch_project}...")
+    run_cmd(["osc", "ci", "-m", f"Update {package} to {latest_tag}"], cwd=str(workdir))
 
-        log_step(f"Committing to {branch_project}...")
-        run_cmd(["osc", "ci", "-m", f"Update {package} to {latest_tag}"])
-
-        log_step("Creating Submit Request...")
-        run_cmd([
+    log_step("Creating Submit Request...")
+    run_cmd(
+        [
             "osc",
             "sr",
             "-m",
             f"Automated update to {latest_tag} based on Anitya release monitoring",
-        ])
-        log_step(f"Done processing {package}!")
-        return "Updated"
-    finally:
-        os.chdir(original_cwd)
+        ],
+        cwd=str(workdir),
+    )
+    log_step(f"Done processing {package}!")
+    return "Updated"
 
 
 @app.command()
@@ -278,21 +276,28 @@ def main(
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            for proj, pkg, a_id in packages_to_process:
-                if pkg in ignore_set:
-                    results.append((proj, pkg, "Ignored", "Package is in ignore list"))
-                    continue
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {}
+                for proj, pkg, a_id in packages_to_process:
+                    if pkg in ignore_set:
+                        results.append((proj, pkg, "Ignored", "Package is in ignore list"))
+                        continue
 
-                task_id = progress.add_task(f"[cyan]{pkg}:[/cyan] Starting...", total=None)
-                try:
-                    status = process_package(proj, pkg, a_id, progress, task_id)
-                    results.append((proj, pkg, status, ""))
-                except Exception as e:
-                    msg = str(e) or repr(e)
-                    results.append((proj, pkg, "Failed", msg))
-                    progress.console.print(f"[red]Failed processing {proj}/{pkg}: {msg}[/red]")
-                finally:
-                    progress.remove_task(task_id)
+                    task_id = progress.add_task(f"[cyan]{pkg}:[/cyan] Starting...", total=None)
+                    future = executor.submit(process_package, proj, pkg, a_id, progress, task_id)
+                    futures[future] = (proj, pkg, task_id)
+
+                for future in as_completed(futures):
+                    proj, pkg, task_id = futures[future]
+                    try:
+                        status = future.result()
+                        results.append((proj, pkg, status, ""))
+                    except Exception as e:
+                        msg = str(e) or repr(e)
+                        results.append((proj, pkg, "Failed", msg))
+                        progress.console.print(f"[red]Failed processing {proj}/{pkg}: {msg}[/red]")
+                    finally:
+                        progress.remove_task(task_id)
 
         if results:
             print("\n")
