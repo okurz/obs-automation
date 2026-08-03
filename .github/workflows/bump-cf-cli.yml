@@ -7,15 +7,16 @@ on:
 jobs:
   update-package:
     runs-on: ubuntu-latest
+    # TODO: Switch to registry.opensuse.org/home:okurz:container:ca/obs-automation (or similar) once built in OBS
     container: opensuse/tumbleweed
     steps:
       - name: Install system dependencies
         run: |
           zypper ref
-          zypper in -y osc jq curl sed obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress build git-core
-
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+          zypper in -y \
+            osc jq curl sed build git-core \
+            obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress \
+            python3-httpx python3-tenacity python3-typer python3-PyYAML python3-defusedxml
 
       - name: Configure OBS Credentials
         run: |
@@ -34,4 +35,5 @@ jobs:
       - name: Run Auto-bump script
         env:
           OBS_USER: ${{ secrets.OBS_USER }}
-        run: ~/.local/bin/uv run auto-bump --project Cloud:Tools --package cf-cli --anitya-id 385503
+        # Running directly via Python since all dependencies are provided system-wide by zypper
+        run: python3 obs_automation/main.py --project Cloud:Tools --package cf-cli --anitya-id 385503
