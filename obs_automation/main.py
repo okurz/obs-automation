@@ -53,15 +53,27 @@ def get_obs_package_url(project: str, package: str) -> str:
     return url_elem.text
 
 
-def fetch_anitya_id_by_url(url: str) -> str:
-    """Lookup Anitya ID based on upstream URL."""
-    base_url = url.removesuffix(".git")
-    for param in ["url", "homepage"]:
-        resp = httpx.get(f"https://release-monitoring.org/api/v2/projects/?{param}={base_url}", timeout=10.0)
+def fetch_anitya_id_by_url(url: str, package_name: str) -> str:
+    """Lookup Anitya ID based on upstream URL and package name."""
+    base_url = url.removesuffix(".git").rstrip("/")
+    repo_name = base_url.split("/")[-1]
+
+    names_to_try = [package_name]
+    if repo_name != package_name:
+        names_to_try.append(repo_name)
+
+    for name in names_to_try:
+        resp = httpx.get(f"https://release-monitoring.org/api/v2/projects/?name={name}", timeout=10.0)
         resp.raise_for_status()
         items = resp.json().get("items", [])
-        if items:
-            return str(items[0]["id"])
+
+        for item in items:
+            # Check if any URL property matches our base_url
+            for prop in ["homepage", "ecosystem", "version_url"]:
+                prop_val = item.get(prop)
+                if prop_val and base_url in prop_val:
+                    return str(item["id"])
+
     raise ValueError(f"Could not find Anitya project for URL: {url}")
 
 
@@ -83,7 +95,7 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
     if not anitya_id:
         print(f"Looking up Anitya ID for {project}/{package}...")
         url = get_obs_package_url(project, package)
-        anitya_id = fetch_anitya_id_by_url(url)
+        anitya_id = fetch_anitya_id_by_url(url, package)
         print(f"Found Anitya ID: {anitya_id}")
 
     latest_tag = fetch_latest_version(anitya_id)
@@ -116,11 +128,15 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
     print(f"Working with branched project: {branch_project}")
 
     print("Checking out OBS package...")
-    run_cmd(["osc", "checkout", branch_project, package])
-
     # Save current working directory so we can return if looping over multiple packages
     original_cwd = Path.cwd()
     workdir = Path(f"{branch_project}/{package}")
+
+    if workdir.exists():
+        run_cmd(["osc", "update"], cwd=str(workdir))
+    else:
+        run_cmd(["osc", "checkout", branch_project, package])
+
     os.chdir(workdir)
 
     try:

@@ -79,10 +79,16 @@ def test_get_obs_package_url_missing(mocker):
 def test_fetch_anitya_id_by_url(mocker):
     mock_get = mocker.patch("httpx.get")
     mock_resp = MagicMock()
-    mock_resp.json.return_value = {"items": [{"id": 385503}]}
+    mock_resp.json.return_value = {
+        "items": [
+            {"id": 999, "homepage": "https://wrong.com"},
+            {"id": 888, "ecosystem": None},
+            {"id": 385503, "ecosystem": "https://github.com/cloudfoundry/cli"},
+        ]
+    }
     mock_get.return_value = mock_resp
 
-    assert fetch_anitya_id_by_url("https://github.com/cloudfoundry/cli.git") == "385503"
+    assert fetch_anitya_id_by_url("https://github.com/cloudfoundry/cli.git", "cf-cli") == "385503"
 
 
 def test_fetch_anitya_id_by_url_missing(mocker):
@@ -92,7 +98,7 @@ def test_fetch_anitya_id_by_url_missing(mocker):
     mock_get.return_value = mock_resp
 
     with pytest.raises(ValueError, match="Could not find Anitya project"):
-        fetch_anitya_id_by_url("https://github.com/cloudfoundry/cli.git")
+        fetch_anitya_id_by_url("https://github.com/cloudfoundry/cli.git", "cf-cli")
 
 
 def test_get_user_packages(mocker):
@@ -370,3 +376,12 @@ def test_get_user_packages_missing_attributes(mocker):
     mock_run_cmd.return_value = mock_res
 
     assert get_user_packages("okurz") == []
+
+
+def test_fetch_anitya_id_by_url_same_name(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"items": [{"id": 111, "version_url": "https://github.com/cf-cli/cf-cli"}]}
+    mock_get.return_value = mock_resp
+
+    assert fetch_anitya_id_by_url("https://github.com/cf-cli/cf-cli.git", "cf-cli") == "111"
