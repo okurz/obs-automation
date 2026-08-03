@@ -14,6 +14,7 @@ from defusedxml import ElementTree  # type: ignore[import-untyped]
 from tenacity import retry, stop_after_attempt, wait_fixed
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 app = typer.Typer()
 console = Console()
@@ -23,7 +24,6 @@ state = {"verbose": False}
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), reraise=True)
 def fetch_latest_version(anitya_id: str) -> str:
     """Fetch the latest version of a project from Anitya."""
-    print(f"Fetching latest version for Anitya ID {anitya_id}...")
     url = f"https://release-monitoring.org/api/project/{anitya_id}"
     resp = httpx.get(url, timeout=10.0)
     resp.raise_for_status()
@@ -38,7 +38,7 @@ def run_cmd(
 ) -> subprocess.CompletedProcess:
     """Run a subprocess command safely."""
     if state["verbose"]:
-        print(f"Running: {' '.join(cmd)}")
+        console.print(f"Running: {' '.join(cmd)}")
 
     # Hide output by default unless explicitly capturing for parsing or verbose is enabled
     if not capture_output and not state["verbose"]:
@@ -49,15 +49,15 @@ def run_cmd(
     try:
         res = subprocess.run(cmd, check=check, text=True, **kwargs)
         if state["verbose"] and capture_output and res.stdout:
-            print(res.stdout)
+            console.print(res.stdout)
         return res
     except subprocess.CalledProcessError as e:
         # If it failed and we were hiding output, print it now for context
         if not state["verbose"]:
             if e.stdout:
-                print(e.stdout)
+                console.print(e.stdout)
             if e.stderr:
-                print(e.stderr, file=sys.stderr)
+                console.print(e.stderr, style="red")
         raise
 
 
@@ -131,21 +131,34 @@ def get_user_packages(user: str) -> list[tuple[str, str]]:
     return packages
 
 
-def process_package(project: str, package: str, anitya_id: str | None = None) -> str:
+def process_package(
+    project: str,
+    package: str,
+    anitya_id: str | None = None,
+    progress: Progress | None = None,
+    task_id: Any | None = None,
+) -> str:
     """Run the bump logic for a single package. Returns 'Updated', 'Skipped', or raises an Exception."""
+
+    def log_step(msg: str) -> None:
+        if progress and task_id is not None:
+            progress.update(task_id, description=f"[cyan]{package}:[/cyan] {msg}")
+        elif state["verbose"]:
+            console.print(msg)
+
     if not anitya_id:
-        print(f"Looking up Anitya ID for {project}/{package}...")
+        log_step(f"Looking up Anitya ID for {project}/{package}...")
         url = get_obs_package_url(project, package)
         anitya_id = fetch_anitya_id_by_name_or_url(package, url)
-        print(f"Found Anitya ID: {anitya_id}")
+        log_step(f"Found Anitya ID: {anitya_id}")
 
     latest_tag = fetch_latest_version(anitya_id)
     if not latest_tag.startswith("v"):
         latest_tag = f"v{latest_tag}"
 
-    print(f"Latest Upstream version (Anitya): {latest_tag}")
+    log_step(f"Latest Upstream version (Anitya): {latest_tag}")
 
-    print(f"Branching the package {package} from {project} in OBS...")
+    log_step(f"Branching from {project} in OBS...")
     branch_project = None
     try:
         branch_res = run_cmd(["osc", "branch", project, package], capture_output=True)
@@ -164,9 +177,9 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
             raise RuntimeError("Could not parse branched project name and OBS_USER not set.")
         branch_project = f"home:{user}:branches:{project}"
 
-    print(f"Working with branched project: {branch_project}")
+    log_step(f"Working with branched project: {branch_project}")
 
-    print("Checking out OBS package...")
+    log_step("Checking out OBS package...")
     # Save current working directory so we can return if looping over multiple packages
     original_cwd = Path.cwd()
     workdir = Path(f"{branch_project}/{package}")
@@ -189,13 +202,13 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
             raise RuntimeError("Could not find current revision in _service file.")
 
         current_tag = current_tag_match.group(1)
-        print(f"Current OBS version: {current_tag}")
+        log_step(f"Current OBS version: {current_tag}")
 
         if current_tag == latest_tag:
-            print("Package is already up to date. Skipping.")
+            log_step("Package is already up to date. Skipping.")
             return "Skipped"
 
-        print(f"Updating _service file to {latest_tag}...")
+        log_step(f"Updating _service file to {latest_tag}...")
         new_content = re.sub(
             r'<param name="revision">[^<]+</param>',
             f'<param name="revision">{latest_tag}</param>',
@@ -203,23 +216,23 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
         )
         service_file.write_text(new_content)
 
-        print("Running OBS services locally to generate tarballs and spec updates...")
+        log_step("Running OBS services locally to generate tarballs and spec updates...")
         run_cmd(["osc", "service", "ra"])
 
-        print("Cleaning up old tracked files and adding new ones...")
+        log_step("Cleaning up old tracked files and adding new ones...")
         run_cmd(["osc", "addremove"])
 
-        print(f"Committing to {branch_project}...")
+        log_step(f"Committing to {branch_project}...")
         run_cmd(["osc", "ci", "-m", f"Update {package} to {latest_tag}"])
 
-        print("Creating Submit Request...")
+        log_step("Creating Submit Request...")
         run_cmd([
             "osc",
             "sr",
             "-m",
             f"Automated update to {latest_tag} based on Anitya release monitoring",
         ])
-        print(f"Done processing {package}!")
+        log_step(f"Done processing {package}!")
         return "Updated"
     finally:
         os.chdir(original_cwd)
@@ -242,39 +255,44 @@ def main(
     ignore_set = set(ignore)
     results = []
 
-    def run_process(proj: str, pkg: str, a_id: str | None = None) -> None:
-        if pkg in ignore_set:
-            print(f"\n--- Skipping ignored package {proj}/{pkg} ---")
-            results.append((proj, pkg, "Ignored", "Package is in ignore list"))
-            return
-
-        print(f"\n--- Processing {proj}/{pkg} ---")
-        try:
-            status = process_package(proj, pkg, a_id)
-            results.append((proj, pkg, status, ""))
-        except Exception as e:
-            msg = str(e) or repr(e)
-            results.append((proj, pkg, "Failed", msg))
-            print(f"Failed processing {proj}/{pkg}: {msg}")
-
     try:
+        packages_to_process = []
         if config:
             with config.open() as f:
                 data = yaml.safe_load(f)
                 config_ignore = data.get("ignore", [])
                 ignore_set.update(config_ignore)
                 for item in data.get("packages", []):
-                    run_process(
-                        item["project"], item["package"], str(item["anitya_id"]) if item.get("anitya_id") else None
-                    )
+                    a_id = str(item["anitya_id"]) if item.get("anitya_id") else None
+                    packages_to_process.append((item["project"], item["package"], a_id))
         elif user:
-            for proj, pkg in get_user_packages(user):
-                run_process(proj, pkg)
+            packages_to_process = [(proj, pkg, None) for proj, pkg in get_user_packages(user)]
         elif project and package:
-            run_process(project, package, anitya_id)
+            packages_to_process.append((project, package, anitya_id))
         else:
             print("Error: Must provide either --config, --user, or both --project and --package.")
             raise typer.Exit(code=1)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            for proj, pkg, a_id in packages_to_process:
+                if pkg in ignore_set:
+                    results.append((proj, pkg, "Ignored", "Package is in ignore list"))
+                    continue
+
+                task_id = progress.add_task(f"[cyan]{pkg}:[/cyan] Starting...", total=None)
+                try:
+                    status = process_package(proj, pkg, a_id, progress, task_id)
+                    results.append((proj, pkg, status, ""))
+                except Exception as e:
+                    msg = str(e) or repr(e)
+                    results.append((proj, pkg, "Failed", msg))
+                    progress.console.print(f"[red]Failed processing {proj}/{pkg}: {msg}[/red]")
+                finally:
+                    progress.remove_task(task_id)
 
         if results:
             print("\n")
