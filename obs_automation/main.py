@@ -233,14 +233,21 @@ def main(
     config: Path | None = typer.Option(None, help="Path to YAML config file"),
     user: str | None = typer.Option(None, help="OBS username to process all maintained packages"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
+    ignore: list[str] = typer.Option([], "--ignore", "-i", help="Packages to ignore (can be used multiple times)"),
 ) -> None:
     """Run the OBS auto-bump process."""
     if verbose:
         state["verbose"] = True
 
+    ignore_set = set(ignore)
     results = []
 
     def run_process(proj: str, pkg: str, a_id: str | None = None) -> None:
+        if pkg in ignore_set:
+            print(f"\n--- Skipping ignored package {proj}/{pkg} ---")
+            results.append((proj, pkg, "Ignored", "Package is in ignore list"))
+            return
+
         print(f"\n--- Processing {proj}/{pkg} ---")
         try:
             status = process_package(proj, pkg, a_id)
@@ -254,6 +261,8 @@ def main(
         if config:
             with config.open() as f:
                 data = yaml.safe_load(f)
+                config_ignore = data.get("ignore", [])
+                ignore_set.update(config_ignore)
                 for item in data.get("packages", []):
                     run_process(
                         item["project"], item["package"], str(item["anitya_id"]) if item.get("anitya_id") else None
@@ -271,7 +280,14 @@ def main(
             print("\n")
             table = Table("Project", "Package", "Status", "Details", title="Auto-Bump Summary")
             for proj, pkg, status, details in results:
-                color = "green" if status == "Updated" else "yellow" if status == "Skipped" else "red"
+                if status == "Updated":
+                    color = "green"
+                elif status == "Skipped":
+                    color = "yellow"
+                elif status == "Ignored":
+                    color = "blue"
+                else:
+                    color = "red"
                 table.add_row(proj, pkg, f"[{color}]{status}[/{color}]", details)
             console.print(table)
 
