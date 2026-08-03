@@ -12,8 +12,12 @@ import typer
 import yaml
 from defusedxml import ElementTree  # type: ignore[import-untyped]
 from tenacity import retry, stop_after_attempt, wait_fixed
+from rich.console import Console
+from rich.table import Table
 
 app = typer.Typer()
+console = Console()
+state = {"verbose": False}
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), reraise=True)
@@ -29,10 +33,32 @@ def fetch_latest_version(anitya_id: str) -> str:
     return str(version)
 
 
-def run_cmd(cmd: list[str], check: bool = True, **kwargs: Any) -> subprocess.CompletedProcess:
+def run_cmd(
+    cmd: list[str], check: bool = True, capture_output: bool = False, **kwargs: Any
+) -> subprocess.CompletedProcess:
     """Run a subprocess command safely."""
-    print(f"Running: {" ".join(cmd)}")
-    return subprocess.run(cmd, check=check, text=True, **kwargs)
+    if state["verbose"]:
+        print(f"Running: {' '.join(cmd)}")
+
+    # Hide output by default unless explicitly capturing for parsing or verbose is enabled
+    if not capture_output and not state["verbose"]:
+        kwargs["capture_output"] = True
+    elif capture_output:
+        kwargs["capture_output"] = True
+
+    try:
+        res = subprocess.run(cmd, check=check, text=True, **kwargs)
+        if state["verbose"] and capture_output and res.stdout:
+            print(res.stdout)
+        return res
+    except subprocess.CalledProcessError as e:
+        # If it failed and we were hiding output, print it now for context
+        if not state["verbose"]:
+            if e.stdout:
+                print(e.stdout)
+            if e.stderr:
+                print(e.stderr, file=sys.stderr)
+        raise
 
 
 def _get_branch_project(stdout: str) -> str | None:
@@ -43,38 +69,53 @@ def _get_branch_project(stdout: str) -> str | None:
     return None
 
 
-def get_obs_package_url(project: str, package: str) -> str:
+def get_obs_package_url(project: str, package: str) -> str | None:
     """Extract upstream URL from OBS meta configuration."""
-    res = run_cmd(["osc", "api", f"/source/{project}/{package}/_meta"], capture_output=True)
+    res = run_cmd(["osc", "api", f"/source/{project}/{package}/_meta"], capture_output=True, check=False)
+    if res.returncode != 0:
+        return None
     root = ElementTree.fromstring(res.stdout)
     url_elem = root.find("url")
     if url_elem is None or not url_elem.text:
-        raise ValueError(f"No <url> element found in OBS meta for {project}/{package}")
+        return None
     return url_elem.text
 
 
-def fetch_anitya_id_by_url(url: str, package_name: str) -> str:
+def fetch_anitya_id_by_name_or_url(package_name: str, url: str | None = None) -> str:
     """Lookup Anitya ID based on upstream URL and package name."""
-    base_url = url.removesuffix(".git").rstrip("/")
-    repo_name = base_url.split("/")[-1]
-
     names_to_try = [package_name]
-    if repo_name != package_name:
-        names_to_try.append(repo_name)
+    base_url = None
+
+    if url:
+        base_url = url.removesuffix(".git").rstrip("/")
+        repo_name = base_url.split("/")[-1]
+        if repo_name != package_name:
+            names_to_try.append(repo_name)
 
     for name in names_to_try:
         resp = httpx.get(f"https://release-monitoring.org/api/v2/projects/?name={name}", timeout=10.0)
         resp.raise_for_status()
         items = resp.json().get("items", [])
 
-        for item in items:
-            # Check if any URL property matches our base_url
-            for prop in ["homepage", "ecosystem", "version_url"]:
-                prop_val = item.get(prop)
-                if prop_val and base_url in prop_val:
-                    return str(item["id"])
+        if not items:
+            continue
 
-    raise ValueError(f"Could not find Anitya project for URL: {url}")
+        if base_url:
+            for item in items:
+                for prop in ["homepage", "ecosystem", "version_url"]:
+                    prop_val = item.get(prop)
+                    if prop_val and base_url in prop_val:
+                        return str(item["id"])
+
+        # Fallback if no URL matched, or if no URL was provided:
+        # Check if there is exactly one exact match by name
+        exact_matches = [i for i in items if i.get("name") == name]
+        if len(exact_matches) == 1:
+            return str(exact_matches[0]["id"])
+        elif len(items) == 1:
+            return str(items[0]["id"])
+
+    raise ValueError(f"Could not find Anitya project for {package_name} (URL: {url})")
 
 
 def get_user_packages(user: str) -> list[tuple[str, str]]:
@@ -90,12 +131,12 @@ def get_user_packages(user: str) -> list[tuple[str, str]]:
     return packages
 
 
-def process_package(project: str, package: str, anitya_id: str | None = None) -> None:
-    """Run the bump logic for a single package."""
+def process_package(project: str, package: str, anitya_id: str | None = None) -> str:
+    """Run the bump logic for a single package. Returns 'Updated', 'Skipped', or raises an Exception."""
     if not anitya_id:
         print(f"Looking up Anitya ID for {project}/{package}...")
         url = get_obs_package_url(project, package)
-        anitya_id = fetch_anitya_id_by_url(url, package)
+        anitya_id = fetch_anitya_id_by_name_or_url(package, url)
         print(f"Found Anitya ID: {anitya_id}")
 
     latest_tag = fetch_latest_version(anitya_id)
@@ -115,14 +156,12 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
                 branch_project = _get_branch_project(line)
                 break
         if not branch_project:
-            print(f"Failed to branch: {e.stderr}")
-            raise typer.Exit(code=1) from None
+            raise RuntimeError(f"Failed to branch: {e.stderr}") from None
 
     if not branch_project:
         user = os.environ.get("OBS_USER")
         if not user:
-            print("Could not parse branched project name and OBS_USER not set.")
-            raise typer.Exit(code=1) from None
+            raise RuntimeError("Could not parse branched project name and OBS_USER not set.")
         branch_project = f"home:{user}:branches:{project}"
 
     print(f"Working with branched project: {branch_project}")
@@ -142,21 +181,19 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
     try:
         service_file = Path("_service")
         if not service_file.exists():
-            print("_service file not found!")
-            raise typer.Exit(code=1)
+            raise RuntimeError("_service file not found!")
 
         content = service_file.read_text()
         current_tag_match = re.search(r'<param name="revision">([^<]+)</param>', content)
         if not current_tag_match:
-            print("Could not find current revision in _service file.")
-            raise typer.Exit(code=1)
+            raise RuntimeError("Could not find current revision in _service file.")
 
         current_tag = current_tag_match.group(1)
         print(f"Current OBS version: {current_tag}")
 
         if current_tag == latest_tag:
             print("Package is already up to date. Skipping.")
-            return
+            return "Skipped"
 
         print(f"Updating _service file to {latest_tag}...")
         new_content = re.sub(
@@ -183,6 +220,7 @@ def process_package(project: str, package: str, anitya_id: str | None = None) ->
             f"Automated update to {latest_tag} based on Anitya release monitoring",
         ])
         print(f"Done processing {package}!")
+        return "Updated"
     finally:
         os.chdir(original_cwd)
 
@@ -194,35 +232,48 @@ def main(
     anitya_id: str | None = typer.Option(None, help="Anitya project ID"),
     config: Path | None = typer.Option(None, help="Path to YAML config file"),
     user: str | None = typer.Option(None, help="OBS username to process all maintained packages"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
     """Run the OBS auto-bump process."""
+    if verbose:
+        state["verbose"] = True
+
+    results = []
+
+    def run_process(proj: str, pkg: str, a_id: str | None = None) -> None:
+        print(f"\n--- Processing {proj}/{pkg} ---")
+        try:
+            status = process_package(proj, pkg, a_id)
+            results.append((proj, pkg, status, ""))
+        except Exception as e:
+            msg = str(e) or repr(e)
+            results.append((proj, pkg, "Failed", msg))
+            print(f"Failed processing {proj}/{pkg}: {msg}")
+
     try:
         if config:
             with config.open() as f:
                 data = yaml.safe_load(f)
                 for item in data.get("packages", []):
-                    try:
-                        process_package(
-                            item["project"], item["package"], str(item["anitya_id"]) if item.get("anitya_id") else None
-                        )
-                    except Exception as e:
-                        print(f"Failed processing {item["project"]}/{item["package"]}: {e}")
-            return
-
-        if user:
+                    run_process(
+                        item["project"], item["package"], str(item["anitya_id"]) if item.get("anitya_id") else None
+                    )
+        elif user:
             for proj, pkg in get_user_packages(user):
-                try:
-                    process_package(proj, pkg)
-                except Exception as e:
-                    print(f"Failed processing {proj}/{pkg}: {e}")
-            return
+                run_process(proj, pkg)
+        elif project and package:
+            run_process(project, package, anitya_id)
+        else:
+            print("Error: Must provide either --config, --user, or both --project and --package.")
+            raise typer.Exit(code=1)
 
-        if project and package:
-            process_package(project, package, anitya_id)
-            return
-
-        print("Error: Must provide either --config, --user, or both --project and --package.")
-        raise typer.Exit(code=1)
+        if results:
+            print("\n")
+            table = Table("Project", "Package", "Status", "Details", title="Auto-Bump Summary")
+            for proj, pkg, status, details in results:
+                color = "green" if status == "Updated" else "yellow" if status == "Skipped" else "red"
+                table.add_row(proj, pkg, f"[{color}]{status}[/{color}]", details)
+            console.print(table)
 
     except typer.Exit as e:
         sys.exit(e.exit_code)
