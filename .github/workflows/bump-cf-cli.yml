@@ -7,17 +7,8 @@ on:
 jobs:
   update-package:
     runs-on: ubuntu-latest
-    # TODO: Switch to registry.opensuse.org/home:okurz:container:ca/obs-automation (or similar) once built in OBS
-    container: opensuse/tumbleweed
+    container: registry.opensuse.org/home/okurz/container/containers/obs-automation:latest
     steps:
-      - name: Install system dependencies
-        run: |
-          zypper ref
-          zypper in -y \
-            osc jq curl sed build git-core \
-            obs-service-tar_scm obs-service-go_modules obs-service-set_version obs-service-recompress \
-            python3-httpx python3-tenacity python3-typer python3-PyYAML python3-defusedxml
-
       - name: Configure OBS Credentials
         run: |
           mkdir -p ~/.config/osc
