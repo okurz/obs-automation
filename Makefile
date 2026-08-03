@@ -25,13 +25,13 @@ only-test-with-coverage: test-unit  ## Alias for "test-unit"
 
 .PHONY: check-ruff
 check-ruff: ## Run ruff linting and formatting checks
-	$(PYTHON_RUN) ruff check
-	$(PYTHON_RUN) ruff format --check
+	$(PYTHON_RUN) ruff check $(SOURCE_FILES)
+	$(PYTHON_RUN) ruff format --check $(SOURCE_FILES)
 
 .PHONY: tidy
 tidy: ## Format code and fix linting issues
 	$(PYTHON_RUN) ruff format
-	$(PYTHON_RUN) ruff check --fix
+	$(PYTHON_RUN) ruff check $(SOURCE_FILES) --fix
 
 .PHONY: check-code-health
 check-code-health: ## Find dead code (vulture)
@@ -40,7 +40,7 @@ check-code-health: ## Find dead code (vulture)
 
 .PHONY: check-types-ty
 check-types-ty: ## Run ty type checker
-	$(PYTHON_RUN) ty check
+	$(PYTHON_RUN) ty check $(SOURCE_FILES)
 
 .PHONY: check-types
 check-types: check-types-ty

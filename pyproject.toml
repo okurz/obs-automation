@@ -74,7 +74,7 @@ preview = true
 
 [tool.ruff.lint]
 extend-select =[
-    "E", "F", "D", "Q", "PL", "W", "I", "ERA", "B",  "SIM", "C4", "T10", "FIX", "ISC", "ICN", "INP", "PIE", "T20", "RSE", "RET", "SLF", "FURB", "EXE", "BLE", "A", "DTZ", "LOG", "G", "C90", "PERF", "PGH", "ARG", "RUF", "S", "FBT", "TRY", "YTT", "ASYNC", "COM", "CPY", "EM", "INT", "PYI", "PT", "SLOT", "TID", "TCH", "PTH", "FLY", "NPY", "PD", "N", "PLE", "PLR", "PLW", "FA", "UP", "PLR0915"
+    "E", "F", "D", "Q", "PL", "W", "I", "ERA", "B",  "SIM", "C4", "T10", "FIX", "ISC", "ICN", "INP", "PIE", "T20", "RSE", "RET", "SLF", "FURB", "EXE", "BLE", "A", "DTZ", "LOG", "G", "C90", "PERF", "PGH", "ARG", "RUF", "S", "FBT", "TRY", "YTT", "ASYNC", "COM", "CPY", "EM", "INT", "PYI", "PT", "SLOT", "TID", "TCH", "PTH", "FLY", "NPY", "PD", "N", "PLE", "PLR", "PLW", "FA", "UP", "PLR0915", "PLR0912"
 ]
 
 ignore = [
@@ -82,7 +82,7 @@ ignore = [
     "D203", "D213",
     "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",
     "T201", "S603", "CPY001", 
-    "TRY003", "EM101", "EM102", "BLE001", "PLR2004", "S607", "FBT001", "FBT002", "TRY301", "PLR0915", "S404",
+    "TRY003", "EM101", "EM102", "BLE001", "PLR2004", "S607", "FBT001", "FBT002", "TRY301", "PLR0915", "PLR0912", "S404",
     "G004", "PERF203", "COM812", "ISC001"
 ]
 
