@@ -245,10 +245,12 @@ def main(
     ignore: list[str] = typer.Option([], "--ignore", "-i", help="Packages to ignore (can be used multiple times)"),
 ) -> None:
     """Run the OBS auto-bump process."""
-    if verbose:
+    is_verbose = verbose if not isinstance(verbose, typer.models.OptionInfo) else False
+    if is_verbose:
         state["verbose"] = True
 
-    ignore_set = set(ignore)
+    actual_ignore = ignore if not isinstance(ignore, typer.models.OptionInfo) else []
+    ignore_set = set(actual_ignore)
     results = []
 
     try:
