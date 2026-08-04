@@ -12,10 +12,10 @@ import httpx
 import typer
 import yaml
 from defusedxml import ElementTree  # type: ignore[import-untyped]
-from tenacity import retry, stop_after_attempt, wait_fixed
 from rich.console import Console
-from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 app = typer.Typer()
 console = Console()
@@ -42,9 +42,7 @@ def run_cmd(
         console.print(f"Running: {' '.join(cmd)}")
 
     # Hide output by default unless explicitly capturing for parsing or verbose is enabled
-    if not capture_output and not state["verbose"]:
-        kwargs["capture_output"] = True
-    elif capture_output:
+    if (not capture_output and not state["verbose"]) or capture_output:
         kwargs["capture_output"] = True
 
     try:
@@ -113,7 +111,7 @@ def fetch_anitya_id_by_name_or_url(package_name: str, url: str | None = None) ->
         exact_matches = [i for i in items if i.get("name") == name]
         if len(exact_matches) == 1:
             return str(exact_matches[0]["id"])
-        elif len(items) == 1:
+        if len(items) == 1:
             return str(items[0]["id"])
 
     raise ValueError(f"Could not find Anitya project for {package_name} (URL: {url})")
