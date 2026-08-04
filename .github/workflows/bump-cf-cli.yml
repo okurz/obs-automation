@@ -21,7 +21,7 @@ jobs:
           EOF
 
       - name: Checkout automation repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Run Auto-bump script
         env:
