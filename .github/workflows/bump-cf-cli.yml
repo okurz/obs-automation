@@ -1,7 +1,7 @@
 name: Auto-bump cf-cli
 on:
   schedule:
-    - cron: '0 4 * * *' # Run daily at 04:00 UTC
+    - cron: '37 2 * * *' # Run nightly at 02:37 UTC to avoid peak hour congestion
   workflow_dispatch: # Allow manual triggering
 
 jobs:
