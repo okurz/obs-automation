@@ -2,7 +2,7 @@ import subprocess
 from unittest.mock import MagicMock
 
 import pytest
-import typer
+from rich.table import Table
 
 from obs_automation.main import (
     _get_branch_project,
@@ -13,6 +13,7 @@ from obs_automation.main import (
     main,
     process_package,
     run_cmd,
+    state,
 )
 
 
@@ -363,3 +364,182 @@ def test_fetch_anitya_id_by_name_or_url_same_name(mocker):
     mock_get.return_value = mock_resp
 
     assert fetch_anitya_id_by_name_or_url("cf-cli", "https://github.com/cf-cli/cf-cli.git") == "111"
+
+
+def test_run_cmd_verbose(mocker):
+    state["verbose"] = True
+    mock_run = mocker.patch("subprocess.run")
+    mock_res = MagicMock()
+    mock_res.stdout = "hello stdout"
+    mock_run.return_value = mock_res
+
+    mock_print = mocker.patch("obs_automation.main.console.print")
+    res = run_cmd(["echo", "hello"], capture_output=True)
+    assert res == mock_res
+    mock_print.assert_any_call("Running: echo hello")
+    mock_print.assert_any_call("hello stdout")
+    state["verbose"] = False
+
+
+def test_run_cmd_error_not_verbose(mocker):
+    state["verbose"] = False
+    mock_run = mocker.patch("subprocess.run")
+    err = subprocess.CalledProcessError(1, ["false"])
+    err.stdout = "some stdout error"
+    err.stderr = "some stderr error"
+    mock_run.side_effect = err
+
+    mock_print = mocker.patch("obs_automation.main.console.print")
+    with pytest.raises(subprocess.CalledProcessError):
+        run_cmd(["false"])
+
+    mock_print.assert_any_call("some stdout error")
+    mock_print.assert_any_call("some stderr error", style="red")
+
+
+def test_fetch_anitya_id_by_name_or_url_exact_match(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"items": [{"id": 111, "name": "other-pkg"}, {"id": 222, "name": "cf-cli"}]}
+    mock_get.return_value = mock_resp
+
+    assert fetch_anitya_id_by_name_or_url("cf-cli", "https://github.com/cf-cli/cf-cli.git") == "222"
+
+
+def test_fetch_anitya_id_by_name_or_url_one_item_fallback(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"items": [{"id": 333, "name": "something-else"}]}
+    mock_get.return_value = mock_resp
+
+    assert fetch_anitya_id_by_name_or_url("cf-cli") == "333"
+
+
+def test_main_cli_config_with_ignore(mocker, tmp_path):
+    mock_process = mocker.patch("obs_automation.main.process_package")
+
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("ignore:\n  - p\npackages:\n  - project: P\n    package: p\n    anitya_id: 123")
+
+    main(project=None, package=None, anitya_id=None, config=config_file, user=None, ignore=["other"])
+    mock_process.assert_not_called()
+
+
+def test_main_cli_verbose_and_ignore(mocker):
+    mock_process = mocker.patch("obs_automation.main.process_package")
+    main(project="P", package="p", anitya_id="123", config=None, user=None, verbose=True, ignore=["p"])
+    assert state["verbose"] is True
+    mock_process.assert_not_called()
+    state["verbose"] = False
+
+
+def test_get_obs_package_url_non_zero_exit(mocker):
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mock_res = MagicMock()
+    mock_res.returncode = 1
+    mock_run_cmd.return_value = mock_res
+    assert get_obs_package_url("Project", "Package") is None
+
+
+def test_fetch_anitya_id_by_name_or_url_multiple_names_loop_continue(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp_empty = MagicMock()
+    mock_resp_empty.json.return_value = {"items": []}
+    mock_resp_match = MagicMock()
+    mock_resp_match.json.return_value = {"items": [{"id": 444, "name": "cli"}]}
+
+    mock_get.side_effect = [mock_resp_empty, mock_resp_match]
+
+    assert fetch_anitya_id_by_name_or_url("cf-cli", "https://github.com/cloudfoundry/cli.git") == "444"
+
+
+def test_process_package_log_step_progress_and_verbose(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="1.2.3")
+    mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">v1.2.3</param>')
+    mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Proj")
+
+    mock_progress = MagicMock()
+    process_package("Proj", "Pkg", "123", progress=mock_progress, task_id=45)
+    mock_progress.update.assert_any_call(45, description="[cyan]Pkg:[/cyan] Latest Upstream version (Anitya): v1.2.3")
+
+    state["verbose"] = True
+    mock_console_print = mocker.patch("obs_automation.main.console.print")
+    process_package("Proj", "Pkg", "123")
+    mock_console_print.assert_any_call("Latest Upstream version (Anitya): v1.2.3")
+    state["verbose"] = False
+
+
+def test_main_cli_summary_colors(mocker, tmp_path):
+    def mock_process_package(proj, pkg, a_id, progress=None, task_id=None):
+        if pkg == "updated-pkg":
+            return "Updated"
+        if pkg == "skipped-pkg":
+            return "Skipped"
+        if pkg == "failed-pkg":
+            raise RuntimeError("Failure reason")
+        return "Unknown"
+
+    mocker.patch("obs_automation.main.process_package", side_effect=mock_process_package)
+    mock_console_print = mocker.patch("obs_automation.main.console.print")
+
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("""
+ignore:
+  - ignored-pkg
+packages:
+  - project: P
+    package: updated-pkg
+  - project: P
+    package: skipped-pkg
+  - project: P
+    package: failed-pkg
+""")
+    main(project=None, package=None, anitya_id=None, config=config_file, user=None)
+
+    assert any(call.args and isinstance(call.args[0], Table) for call in mock_console_print.call_args_list)
+
+
+def test_run_cmd_error_verbose(mocker):
+    state["verbose"] = True
+    mock_run = mocker.patch("subprocess.run")
+    err = subprocess.CalledProcessError(1, ["false"])
+    err.stdout = "some stdout error"
+    err.stderr = "some stderr error"
+    mock_run.side_effect = err
+
+    with pytest.raises(subprocess.CalledProcessError):
+        run_cmd(["false"])
+    state["verbose"] = False
+
+
+def test_run_cmd_error_empty_outputs(mocker):
+    state["verbose"] = False
+    mock_run = mocker.patch("subprocess.run")
+    err = subprocess.CalledProcessError(1, ["false"])
+    err.stdout = None
+    err.stderr = None
+    mock_run.side_effect = err
+
+    mock_print = mocker.patch("obs_automation.main.console.print")
+    with pytest.raises(subprocess.CalledProcessError):
+        run_cmd(["false"])
+    mock_print.assert_not_called()
+
+
+def test_fetch_anitya_id_by_name_or_url_multiple_no_match(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"items": [{"id": 111, "name": "diff1"}, {"id": 222, "name": "diff2"}]}
+    mock_get.return_value = mock_resp
+
+    with pytest.raises(ValueError, match="Could not find Anitya project"):
+        fetch_anitya_id_by_name_or_url("cf-cli")
+
+
+def test_main_cli_user_empty_packages(mocker):
+    mocker.patch("obs_automation.main.get_user_packages", return_value=[])
+    mock_console_print = mocker.patch("obs_automation.main.console.print")
+    main(project=None, package=None, anitya_id=None, config=None, user="emptyuser")
+    assert not any(call.args and isinstance(call.args[0], Table) for call in mock_console_print.call_args_list)

@@ -39,17 +39,16 @@ def run_cmd(
 ) -> subprocess.CompletedProcess:
     """Run a subprocess command safely."""
     if state["verbose"]:
-        console.print(f"Running: {' '.join(cmd)}")
+        console.print(f"Running: {" ".join(cmd)}")
 
     # Hide output by default unless explicitly capturing for parsing or verbose is enabled
-    if (not capture_output and not state["verbose"]) or capture_output:
+    if not state["verbose"] or capture_output:
         kwargs["capture_output"] = True
 
     try:
         res = subprocess.run(cmd, check=check, text=True, **kwargs)
         if state["verbose"] and capture_output and res.stdout:
             console.print(res.stdout)
-        return res
     except subprocess.CalledProcessError as e:
         # If it failed and we were hiding output, print it now for context
         if not state["verbose"]:
@@ -58,6 +57,8 @@ def run_cmd(
             if e.stderr:
                 console.print(e.stderr, style="red")
         raise
+    else:
+        return res
 
 
 def _get_branch_project(stdout: str) -> str | None:
@@ -271,33 +272,35 @@ def main(
             print("Error: Must provide either --config, --user, or both --project and --package.")
             raise typer.Exit(code=1)
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {}
-                for proj, pkg, a_id in packages_to_process:
-                    if pkg in ignore_set:
-                        results.append((proj, pkg, "Ignored", "Package is in ignore list"))
-                        continue
+        with (
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress,
+            ThreadPoolExecutor(max_workers=4) as executor,
+        ):
+            futures = {}
+            for proj, pkg, a_id in packages_to_process:
+                if pkg in ignore_set:
+                    results.append((proj, pkg, "Ignored", "Package is in ignore list"))
+                    continue
 
-                    task_id = progress.add_task(f"[cyan]{pkg}:[/cyan] Starting...", total=None)
-                    future = executor.submit(process_package, proj, pkg, a_id, progress, task_id)
-                    futures[future] = (proj, pkg, task_id)
+                task_id = progress.add_task(f"[cyan]{pkg}:[/cyan] Starting...", total=None)
+                future = executor.submit(process_package, proj, pkg, a_id, progress, task_id)
+                futures[future] = (proj, pkg, task_id)
 
-                for future in as_completed(futures):
-                    proj, pkg, task_id = futures[future]
-                    try:
-                        status = future.result()
-                        results.append((proj, pkg, status, ""))
-                    except Exception as e:
-                        msg = str(e) or repr(e)
-                        results.append((proj, pkg, "Failed", msg))
-                        progress.console.print(f"[red]Failed processing {proj}/{pkg}: {msg}[/red]")
-                    finally:
-                        progress.remove_task(task_id)
+            for future in as_completed(futures):
+                proj, pkg, task_id = futures[future]
+                try:
+                    status = future.result()
+                    results.append((proj, pkg, status, ""))
+                except Exception as e:
+                    msg = str(e) or repr(e)
+                    results.append((proj, pkg, "Failed", msg))
+                    progress.console.print(f"[red]Failed processing {proj}/{pkg}: {msg}[/red]")
+                finally:
+                    progress.remove_task(task_id)
 
         if results:
             print("\n")
