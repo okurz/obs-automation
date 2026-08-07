@@ -152,11 +152,8 @@ def process_package(
         anitya_id = fetch_anitya_id_by_name_or_url(package, url)
         log_step(f"Found Anitya ID: {anitya_id}")
 
-    latest_tag = fetch_latest_version(anitya_id)
-    if not latest_tag.startswith("v"):
-        latest_tag = f"v{latest_tag}"
-
-    log_step(f"Latest Upstream version (Anitya): {latest_tag}")
+    latest_version = fetch_latest_version(anitya_id)
+    log_step(f"Latest Upstream version (Anitya): {latest_version}")
 
     log_step(f"Branching from {project} in OBS...")
     branch_project = None
@@ -189,32 +186,61 @@ def process_package(
         run_cmd(["osc", "checkout", branch_project, package])
 
     service_file = workdir / "_service"
-    if not service_file.exists():
-        raise RuntimeError("_service file not found!")
+    spec_file = workdir / f"{package}.spec"
 
-    content = service_file.read_text()
-    current_tag_match = re.search(r'<param name="revision">([^<]+)</param>', content)
-    if not current_tag_match:
-        raise RuntimeError("Could not find current revision in _service file.")
+    current_tag = None
+    is_spec_bump = False
 
-    current_tag = current_tag_match.group(1)
+    if service_file.exists():
+        content = service_file.read_text()
+        current_tag_match = re.search(r'<param name="revision">([^<]+)</param>', content)
+        if current_tag_match:
+            current_tag = current_tag_match.group(1)
+
+    if not current_tag and spec_file.exists():
+        content = spec_file.read_text()
+        current_tag_match = re.search(r"^Version:\s+([^\s]+)", content, flags=re.MULTILINE)
+        if current_tag_match:
+            current_tag = current_tag_match.group(1)
+            is_spec_bump = True
+
+    if not current_tag:
+        raise RuntimeError("Could not find current revision in _service or Version in .spec file.")
+
     log_step(f"Current OBS version: {current_tag}")
 
     if current_tag in {"master", "main", "develop"} or re.fullmatch(r"[0-9a-f]{40}", current_tag):
         log_step("Package tracks a snapshot/branch. Skipping to prevent downgrade.")
         return "Skipped (Snapshot)"
 
+    if current_tag.startswith("v") and not latest_version.startswith("v"):
+        latest_tag = f"v{latest_version}"
+    elif not current_tag.startswith("v") and latest_version.startswith("v"):
+        latest_tag = latest_version.lstrip("v")
+    else:
+        latest_tag = latest_version
+
     if current_tag == latest_tag:
         log_step("Package is already up to date. Skipping.")
         return "Skipped"
 
-    log_step(f"Updating _service file to {latest_tag}...")
-    new_content = re.sub(
-        r'<param name="revision">[^<]+</param>',
-        f'<param name="revision">{latest_tag}</param>',
-        content,
-    )
-    service_file.write_text(new_content)
+    if is_spec_bump:
+        log_step(f"Updating .spec file Version to {latest_tag}...")
+        new_content = re.sub(
+            r"^(Version:\s+)[^\s]+",
+            rf"\g<1>{latest_tag}",
+            content,
+            flags=re.MULTILINE,
+        )
+        spec_file.write_text(new_content)
+    else:
+        log_step(f"Updating _service file to {latest_tag}...")
+        new_content = re.sub(
+            r'<param name="revision">[^<]+</param>',
+            f'<param name="revision">{latest_tag}</param>',
+            content,
+        )
+        service_file.write_text(new_content)
 
     log_step("Running OBS services locally to generate tarballs and spec updates...")
     run_cmd(["osc", "service", "ra"], cwd=str(workdir))

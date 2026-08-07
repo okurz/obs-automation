@@ -324,7 +324,7 @@ def test_process_package_missing_service_file(mocker):
     mock_run_cmd.side_effect = side_effect
     mocker.patch("pathlib.Path.exists", return_value=False)
 
-    with pytest.raises(RuntimeError, match="_service file not found!"):
+    with pytest.raises(RuntimeError, match="Could not find current revision in _service or Version in .spec file."):
         process_package(project="Project", package="cf-cli", anitya_id="123")
 
 
@@ -344,7 +344,7 @@ def test_process_package_service_file_missing_revision(mocker):
     mocker.patch("pathlib.Path.exists", return_value=True)
     mocker.patch("pathlib.Path.read_text", return_value='<service name="tar_scm"></service>')
 
-    with pytest.raises(RuntimeError, match="Could not find current revision in _service file."):
+    with pytest.raises(RuntimeError, match="Could not find current revision in _service or Version in .spec file."):
         process_package(project="Project", package="cf-cli", anitya_id="123")
 
 
@@ -462,12 +462,12 @@ def test_process_package_log_step_progress_and_verbose(mocker):
 
     mock_progress = MagicMock()
     process_package("Proj", "Pkg", "123", progress=mock_progress, task_id=45)
-    mock_progress.update.assert_any_call(45, description="[cyan]Pkg:[/cyan] Latest Upstream version (Anitya): v1.2.3")
+    mock_progress.update.assert_any_call(45, description="[cyan]Pkg:[/cyan] Latest Upstream version (Anitya): 1.2.3")
 
     state["verbose"] = True
     mock_console_print = mocker.patch("obs_automation.main.console.print")
     process_package("Proj", "Pkg", "123")
-    mock_console_print.assert_any_call("Latest Upstream version (Anitya): v1.2.3")
+    mock_console_print.assert_any_call("Latest Upstream version (Anitya): 1.2.3")
     state["verbose"] = False
 
 
@@ -548,18 +548,17 @@ def test_main_cli_user_empty_packages(mocker):
 def test_process_package_snapshot_branch(mocker):
     mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.3")
     mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
-
-    mock_branch_res = MagicMock()
-    mock_branch_res.stdout = "home:test:branches:Project/cf-cli"
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        if cmd[0:2] == ["osc", "branch"]:
-            return mock_branch_res
         return MagicMock()
 
     mock_run_cmd.side_effect = side_effect
 
-    mocker.patch("pathlib.Path.exists", return_value=True)
+    def mock_exists(self):
+        return str(self).endswith("_service")
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
     mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">master</param>')
 
     assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Skipped (Snapshot)"
@@ -568,20 +567,82 @@ def test_process_package_snapshot_branch(mocker):
 def test_process_package_snapshot_sha(mocker):
     mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.3")
     mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
-
-    mock_branch_res = MagicMock()
-    mock_branch_res.stdout = "home:test:branches:Project/cf-cli"
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        if cmd[0:2] == ["osc", "branch"]:
-            return mock_branch_res
         return MagicMock()
 
     mock_run_cmd.side_effect = side_effect
 
-    mocker.patch("pathlib.Path.exists", return_value=True)
+    def mock_exists(self):
+        return str(self).endswith("_service")
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
     mocker.patch(
         "pathlib.Path.read_text", return_value='<param name="revision">7acac92a6543b593259b1689622d99d164537119</param>'
     )
 
     assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Skipped (Snapshot)"
+
+
+def test_process_package_spec_bump(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+
+    def side_effect(cmd, **_kwargs):
+        return MagicMock()
+
+    mock_run_cmd.side_effect = side_effect
+
+    def mock_exists(self):
+        return str(self).endswith(".spec")
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
+    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
+    mock_write = mocker.patch("pathlib.Path.write_text")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
+    mock_write.assert_called_once_with("Version:        1.2.4")
+
+
+def test_process_package_spec_bump_strip_v(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+
+    def side_effect(cmd, **_kwargs):
+        return MagicMock()
+
+    mock_run_cmd.side_effect = side_effect
+
+    def mock_exists(self):
+        return str(self).endswith(".spec")
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
+    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
+    mock_write = mocker.patch("pathlib.Path.write_text")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
+    mock_write.assert_called_once_with("Version:        1.2.4")
+
+
+def test_process_package_service_bump_add_v(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+
+    def side_effect(cmd, **_kwargs):
+        return MagicMock()
+
+    mock_run_cmd.side_effect = side_effect
+
+    def mock_exists(self):
+        return str(self).endswith("_service")
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
+    mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">v1.2.3</param>')
+    mock_write = mocker.patch("pathlib.Path.write_text")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
+    mock_write.assert_called_once_with('<param name="revision">v1.2.4</param>')
