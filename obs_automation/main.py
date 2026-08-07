@@ -243,7 +243,13 @@ def process_package(
         service_file.write_text(new_content)
 
     log_step("Running OBS services locally to generate tarballs and spec updates...")
-    run_cmd(["osc", "service", "ra"], cwd=str(workdir))
+    ra_res = run_cmd(["osc", "service", "ra"], cwd=str(workdir), capture_output=True)
+
+    for match in re.finditer(r"^###ASK\s+(.+)$", ra_res.stdout, flags=re.MULTILINE):
+        obsolete_file = Path(match.group(1))
+        if obsolete_file.exists():
+            log_step(f"Removing obsolete file: {obsolete_file.name}")
+            obsolete_file.unlink()
 
     log_step("Cleaning up old tracked files and adding new ones...")
     run_cmd(["osc", "addremove"], cwd=str(workdir))

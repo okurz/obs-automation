@@ -122,7 +122,9 @@ def test_process_package_already_up_to_date(mocker):
     def side_effect(cmd, **_kwargs):
         if cmd[0:2] == ["osc", "branch"]:
             return mock_branch_res
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -142,7 +144,9 @@ def test_process_package_update_flow(mocker):
     def side_effect(cmd, **_kwargs):
         if cmd[0:2] == ["osc", "branch"]:
             return mock_branch_res
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -168,7 +172,9 @@ def test_process_package_missing_anitya_id(mocker):
     def side_effect(cmd, **_kwargs):
         if cmd[0:2] == ["osc", "branch"]:
             return mock_branch_res
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
     mocker.patch("pathlib.Path.exists", return_value=True)
@@ -242,7 +248,9 @@ def test_process_package_branch_fails_completely(mocker):
             err = subprocess.CalledProcessError(1, cmd)
             err.stderr = "some unknown error"
             raise err
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -259,7 +267,9 @@ def test_process_package_branch_already_exists(mocker):
             err = subprocess.CalledProcessError(1, cmd)
             err.stderr = "branch target package already exists: home:test:branches:Project/cf-cli"
             raise err
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
     mocker.patch("pathlib.Path.exists", return_value=True)
@@ -279,7 +289,9 @@ def test_process_package_branch_parsing_fails_with_fallback(mocker, monkeypatch)
     def side_effect(cmd, **_kwargs):
         if cmd[0:2] == ["osc", "branch"]:
             return mock_branch_res
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
     monkeypatch.setenv("OBS_USER", "fallbackuser")
@@ -300,7 +312,9 @@ def test_process_package_branch_parsing_fails_no_fallback(mocker, monkeypatch):
     def side_effect(cmd, **_kwargs):
         if cmd[0:2] == ["osc", "branch"]:
             return mock_branch_res
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
     monkeypatch.delenv("OBS_USER", raising=False)
@@ -319,7 +333,9 @@ def test_process_package_missing_service_file(mocker):
     def side_effect(cmd, **_kwargs):
         if cmd[0:2] == ["osc", "branch"]:
             return mock_branch_res
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
     mocker.patch("pathlib.Path.exists", return_value=False)
@@ -338,7 +354,9 @@ def test_process_package_service_file_missing_revision(mocker):
     def side_effect(cmd, **_kwargs):
         if cmd[0:2] == ["osc", "branch"]:
             return mock_branch_res
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
     mocker.patch("pathlib.Path.exists", return_value=True)
@@ -551,7 +569,9 @@ def test_process_package_snapshot_branch(mocker):
     mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -570,7 +590,9 @@ def test_process_package_snapshot_sha(mocker):
     mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -591,7 +613,9 @@ def test_process_package_spec_bump(mocker):
     mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -612,7 +636,9 @@ def test_process_package_spec_bump_strip_v(mocker):
     mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -633,7 +659,9 @@ def test_process_package_service_bump_add_v(mocker):
     mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        return MagicMock()
+        m = MagicMock()
+        m.stdout = ""
+        return m
 
     mock_run_cmd.side_effect = side_effect
 
@@ -646,3 +674,61 @@ def test_process_package_service_bump_add_v(mocker):
 
     assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
     mock_write.assert_called_once_with('<param name="revision">v1.2.4</param>')
+
+
+def test_process_package_remove_obsolete(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+
+    def side_effect(cmd, **_kwargs):
+        m = MagicMock()
+        if cmd[0:2] == ["osc", "service"]:
+            m.stdout = "###ASK /path/to/obsolete.tar.gz\n"
+        else:
+            m.stdout = ""
+        return m
+
+    mock_run_cmd.side_effect = side_effect
+
+    def mock_exists(self):
+        if str(self) == "/path/to/obsolete.tar.gz":
+            return True
+        return str(self).endswith(".spec")
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
+    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
+    mocker.patch("pathlib.Path.write_text")
+    mock_unlink = mocker.patch("pathlib.Path.unlink")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
+    mock_unlink.assert_called_once()
+
+
+def test_process_package_remove_obsolete_not_exist(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+
+    def side_effect(cmd, **_kwargs):
+        m = MagicMock()
+        if cmd[0:2] == ["osc", "service"]:
+            m.stdout = "###ASK /path/to/obsolete.tar.gz\n"
+        else:
+            m.stdout = ""
+        return m
+
+    mock_run_cmd.side_effect = side_effect
+
+    def mock_exists(self):
+        if str(self) == "/path/to/obsolete.tar.gz":
+            return False
+        return str(self).endswith(".spec")
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
+    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
+    mocker.patch("pathlib.Path.write_text")
+    mock_unlink = mocker.patch("pathlib.Path.unlink")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
+    mock_unlink.assert_not_called()
