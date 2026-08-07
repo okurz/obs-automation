@@ -476,7 +476,7 @@ def test_main_cli_summary_colors(mocker, tmp_path):
         if pkg == "updated-pkg":
             return "Updated"
         if pkg == "skipped-pkg":
-            return "Skipped"
+            return "Skipped (Snapshot)"
         if pkg == "failed-pkg":
             raise RuntimeError("Failure reason")
         return "Unknown"
@@ -543,3 +543,45 @@ def test_main_cli_user_empty_packages(mocker):
     mock_console_print = mocker.patch("obs_automation.main.console.print")
     main(project=None, package=None, anitya_id=None, config=None, user="emptyuser")
     assert not any(call.args and isinstance(call.args[0], Table) for call in mock_console_print.call_args_list)
+
+
+def test_process_package_snapshot_branch(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.3")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+
+    mock_branch_res = MagicMock()
+    mock_branch_res.stdout = "home:test:branches:Project/cf-cli"
+
+    def side_effect(cmd, **_kwargs):
+        if cmd[0:2] == ["osc", "branch"]:
+            return mock_branch_res
+        return MagicMock()
+
+    mock_run_cmd.side_effect = side_effect
+
+    mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">master</param>')
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Skipped (Snapshot)"
+
+
+def test_process_package_snapshot_sha(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.3")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+
+    mock_branch_res = MagicMock()
+    mock_branch_res.stdout = "home:test:branches:Project/cf-cli"
+
+    def side_effect(cmd, **_kwargs):
+        if cmd[0:2] == ["osc", "branch"]:
+            return mock_branch_res
+        return MagicMock()
+
+    mock_run_cmd.side_effect = side_effect
+
+    mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch(
+        "pathlib.Path.read_text", return_value='<param name="revision">7acac92a6543b593259b1689622d99d164537119</param>'
+    )
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Skipped (Snapshot)"

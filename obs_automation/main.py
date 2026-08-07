@@ -200,6 +200,10 @@ def process_package(
     current_tag = current_tag_match.group(1)
     log_step(f"Current OBS version: {current_tag}")
 
+    if current_tag in {"master", "main", "develop"} or re.fullmatch(r"[0-9a-f]{40}", current_tag):
+        log_step("Package tracks a snapshot/branch. Skipping to prevent downgrade.")
+        return "Skipped (Snapshot)"
+
     if current_tag == latest_tag:
         log_step("Package is already up to date. Skipping.")
         return "Skipped"
@@ -308,7 +312,7 @@ def main(
             for proj, pkg, status, details in results:
                 if status == "Updated":
                     color = "green"
-                elif status == "Skipped":
+                elif status.startswith("Skipped"):
                     color = "yellow"
                 elif status == "Ignored":
                     color = "blue"
