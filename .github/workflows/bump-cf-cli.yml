@@ -1,11 +1,11 @@
-name: Auto-bump cf-cli
+name: Auto-bump packages
 on:
   schedule:
     - cron: '37 2 * * *' # Run nightly at 02:37 UTC to avoid peak hour congestion
   workflow_dispatch: # Allow manual triggering
 
 jobs:
-  update-package:
+  update-packages:
     runs-on: ubuntu-latest
     container: registry.opensuse.org/home/okurz/container/containers/obs-automation:latest
     steps:
@@ -26,5 +26,5 @@ jobs:
       - name: Run Auto-bump script
         env:
           OBS_USER: ${{ secrets.OBS_USER }}
-        # Running directly via Python since all dependencies are provided system-wide by zypper
-        run: python3 obs_automation/main.py --project Cloud:Tools --package cf-cli --anitya-id 385503
+        # Running directly via Python to process all maintained packages of the user
+        run: python3 obs_automation/main.py --user ${{ secrets.OBS_USER }}
