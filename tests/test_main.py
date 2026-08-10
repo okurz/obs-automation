@@ -344,7 +344,7 @@ def test_process_package_service_file_missing_revision(mocker):
     mocker.patch("pathlib.Path.exists", return_value=True)
     mocker.patch("pathlib.Path.read_text", return_value='<service name="tar_scm"></service>')
 
-    with pytest.raises(RuntimeError, match="Could not find current revision in _service file."):
+    with pytest.raises(RuntimeError, match=r"Could not find current revision in _service file\."):
         process_package(project="Project", package="cf-cli", anitya_id="123")
 
 
