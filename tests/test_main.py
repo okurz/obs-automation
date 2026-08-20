@@ -732,3 +732,59 @@ def test_process_package_remove_obsolete_not_exist(mocker):
 
     assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
     mock_unlink.assert_not_called()
+
+
+def test_fetch_anitya_id_by_name_or_url_packages_mapping(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp_packages = mocker.MagicMock()
+    mock_resp_packages.json.return_value = {"items": [{"distribution": "openSUSE", "project": "my-dist-pkg"}]}
+    mock_resp_projects = mocker.MagicMock()
+    mock_resp_projects.json.return_value = {"items": [{"id": 555, "name": "my-dist-pkg"}]}
+
+    # First call to packages API, second to projects API
+    mock_get.side_effect = [mock_resp_packages, mock_resp_projects]
+
+    # Call with a package name
+    assert fetch_anitya_id_by_name_or_url("python-my-dist-pkg") == "555"
+
+
+def test_fetch_anitya_id_by_name_or_url_python_prefix(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp_packages = mocker.MagicMock()
+    # No mapping found
+    mock_resp_packages.json.return_value = {"items": []}
+
+    mock_resp_proj_empty = mocker.MagicMock()
+    mock_resp_proj_empty.json.return_value = {"items": []}
+
+    mock_resp_proj_match = mocker.MagicMock()
+    mock_resp_proj_match.json.return_value = {"items": [{"id": 666, "name": "zope.interface"}]}
+
+    # 1. packages
+    # 2. projects?name=python-zope.interface
+    # 3. projects?name=zope.interface
+    mock_get.side_effect = [mock_resp_packages, mock_resp_proj_empty, mock_resp_proj_match]
+
+    assert fetch_anitya_id_by_name_or_url("python-zope.interface") == "666"
+
+
+def test_fetch_anitya_id_by_name_or_url_python_prefix_already_in_list(mocker):
+    mock_get = mocker.patch("httpx.get")
+    mock_resp_packages = mocker.MagicMock()
+    mock_resp_packages.json.return_value = {"items": []}
+
+    mock_resp_proj_empty = mocker.MagicMock()
+    mock_resp_proj_empty.json.return_value = {"items": []}
+
+    mock_resp_proj_match = mocker.MagicMock()
+    mock_resp_proj_match.json.return_value = {"items": [{"id": 777, "name": "zope.interface"}]}
+
+    # 1. packages
+    # 2. projects?name=python-zope.interface
+    # 3. projects?name=zope.interface
+    mock_get.side_effect = [mock_resp_packages, mock_resp_proj_empty, mock_resp_proj_match]
+
+    assert (
+        fetch_anitya_id_by_name_or_url("python-zope.interface", "https://github.com/zopefoundation/zope.interface.git")
+        == "777"
+    )

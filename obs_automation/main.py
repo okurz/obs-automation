@@ -1,5 +1,6 @@
 """OBS automation tooling for headless package bumping."""
 
+import contextlib
 import os
 import re
 import subprocess
@@ -85,6 +86,21 @@ def fetch_anitya_id_by_name_or_url(package_name: str, url: str | None = None) ->
     """Lookup Anitya ID based on upstream URL and package name."""
     names_to_try = [package_name]
     base_url = None
+
+    # Try mapping using Anitya's packages API first
+    with contextlib.suppress(Exception):
+        pkg_resp = httpx.get(f"https://release-monitoring.org/api/v2/packages/?name={package_name}", timeout=10.0)
+        pkg_resp.raise_for_status()
+        for pkg_item in pkg_resp.json().get("items", []):
+            proj_name = pkg_item.get("project")
+            if pkg_item.get("distribution") == "openSUSE" and proj_name and proj_name not in names_to_try:
+                # Prioritize this mapped name by inserting it at the beginning
+                names_to_try.insert(0, proj_name)
+
+    if package_name.startswith("python-"):
+        stripped = package_name.removeprefix("python-")
+        if stripped not in names_to_try:
+            names_to_try.append(stripped)
 
     if url:
         base_url = url.removesuffix(".git").rstrip("/")
