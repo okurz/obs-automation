@@ -788,3 +788,63 @@ def test_fetch_anitya_id_by_name_or_url_python_prefix_already_in_list(mocker):
         fetch_anitya_id_by_name_or_url("python-zope.interface", "https://github.com/zopefoundation/zope.interface.git")
         == "777"
     )
+
+
+def test_process_package_dry_run(mocker):
+    state["dry_run"] = True
+
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.3")
+    mocker.patch("obs_automation.main.fetch_anitya_id_by_name_or_url", return_value="123")
+
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+
+    mocker.patch("pathlib.Path.exists", side_effect=lambda: True)
+    # Return an older version so it triggers an update
+    mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">v1.0.0</param>')
+    mock_write_text = mocker.patch("pathlib.Path.write_text")
+
+    res = process_package("Proj", "Pkg", "123")
+
+    assert res == "Updated (dry-run)"
+    # run_cmd shouldn't have been called for branch
+    for call in mock_run_cmd.mock_calls:
+        args = call.args[0]
+        assert args[1] != "branch"
+        assert args[1] != "ci"
+        assert args[1] != "sr"
+        assert args[1] != "service"
+
+    mock_write_text.assert_not_called()
+
+    state["dry_run"] = False
+
+
+def test_process_package_dry_run_spec(mocker):
+    state["dry_run"] = True
+
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.3")
+    mocker.patch("obs_automation.main.fetch_anitya_id_by_name_or_url", return_value="123")
+
+    mocker.patch("obs_automation.main.run_cmd")
+
+    def mock_exists(self):
+        return self.name.endswith(".spec") or self.name == "Pkg"
+
+    mocker.patch("pathlib.Path.exists", mock_exists)
+    mocker.patch("pathlib.Path.read_text", return_value="Version:  1.0.0")
+    mock_write_text = mocker.patch("pathlib.Path.write_text")
+
+    res = process_package("Proj", "Pkg", "123")
+
+    assert res == "Updated (dry-run)"
+    mock_write_text.assert_not_called()
+
+    state["dry_run"] = False
+
+
+def test_main_cli_dry_run(mocker):
+    mocker.patch("obs_automation.main.process_package")
+
+    main(project="Proj", package="pkg", anitya_id="123", config=None, user=None, dry_run=True)
+    assert state.get("dry_run") is True
+    state["dry_run"] = False

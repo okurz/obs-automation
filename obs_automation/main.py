@@ -20,7 +20,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 
 app = typer.Typer()
 console = Console()
-state = {"verbose": False}
+state = {"verbose": False, "dry_run": False}
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2), reraise=True)
@@ -173,22 +173,26 @@ def process_package(
 
     log_step(f"Branching from {project} in OBS...")
     branch_project = None
-    try:
-        branch_res = run_cmd(["osc", "branch", project, package], capture_output=True)
-        branch_project = _get_branch_project(branch_res.stdout)
-    except subprocess.CalledProcessError as e:
-        for line in e.stderr.splitlines():
-            if "already exists:" in line:
-                branch_project = _get_branch_project(line)
-                break
-        if not branch_project:
-            raise RuntimeError(f"Failed to branch: {e.stderr}") from None
+    if state.get("dry_run"):
+        log_step("[dry-run] Skipping branch creation, using original project for local checkout.")
+        branch_project = project
+    else:
+        try:
+            branch_res = run_cmd(["osc", "branch", project, package], capture_output=True)
+            branch_project = _get_branch_project(branch_res.stdout)
+        except subprocess.CalledProcessError as e:
+            for line in e.stderr.splitlines():
+                if "already exists:" in line:
+                    branch_project = _get_branch_project(line)
+                    break
+            if not branch_project:
+                raise RuntimeError(f"Failed to branch: {e.stderr}") from None
 
-    if not branch_project:
-        user = os.environ.get("OBS_USER")
-        if not user:
-            raise RuntimeError("Could not parse branched project name and OBS_USER not set.")
-        branch_project = f"home:{user}:branches:{project}"
+        if not branch_project:
+            user = os.environ.get("OBS_USER")
+            if not user:
+                raise RuntimeError("Could not parse branched project name and OBS_USER not set.")
+            branch_project = f"home:{user}:branches:{project}"
 
     log_step(f"Working with branched project: {branch_project}")
 
@@ -242,21 +246,31 @@ def process_package(
 
     if is_spec_bump:
         log_step(f"Updating .spec file Version to {latest_tag}...")
-        new_content = re.sub(
-            r"^(Version:\s+)[^\s]+",
-            rf"\g<1>{latest_tag}",
-            content,
-            flags=re.MULTILINE,
-        )
-        spec_file.write_text(new_content)
+        if not state.get("dry_run"):
+            new_content = re.sub(
+                r"^(Version:\s+)[^\s]+",
+                rf"\g<1>{latest_tag}",
+                content,
+                flags=re.MULTILINE,
+            )
+            spec_file.write_text(new_content)
+        else:
+            log_step(f"[dry-run] Would update .spec file Version to {latest_tag}")
     else:
         log_step(f"Updating _service file to {latest_tag}...")
-        new_content = re.sub(
-            r'<param name="revision">[^<]+</param>',
-            f'<param name="revision">{latest_tag}</param>',
-            content,
-        )
-        service_file.write_text(new_content)
+        if not state.get("dry_run"):
+            new_content = re.sub(
+                r'<param name="revision">[^<]+</param>',
+                f'<param name="revision">{latest_tag}</param>',
+                content,
+            )
+            service_file.write_text(new_content)
+        else:
+            log_step(f"[dry-run] Would update _service file to {latest_tag}")
+
+    if state.get("dry_run"):
+        log_step("[dry-run] Skipping running services, committing, and submitting.")
+        return "Updated (dry-run)"
 
     log_step("Running OBS services locally to generate tarballs and spec updates...")
     ra_res = run_cmd(["osc", "service", "ra"], cwd=str(workdir), capture_output=True)
@@ -295,12 +309,18 @@ def main(
     config: Path | None = typer.Option(None, help="Path to YAML config file"),
     user: str | None = typer.Option(None, help="OBS username to process all maintained packages"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "--dry", help="Perform a dry run without making any changes in OBS"
+    ),
     ignore: list[str] = typer.Option([], "--ignore", "-i", help="Packages to ignore (can be used multiple times)"),
 ) -> None:
     """Run the OBS auto-bump process."""
     is_verbose = verbose if not isinstance(verbose, typer.models.OptionInfo) else False
     if is_verbose:
         state["verbose"] = True
+    is_dry_run = dry_run if not isinstance(dry_run, typer.models.OptionInfo) else False
+    if is_dry_run:
+        state["dry_run"] = True
 
     actual_ignore = ignore if not isinstance(ignore, typer.models.OptionInfo) else []
     ignore_set = set(actual_ignore)
