@@ -289,6 +289,10 @@ def process_package(
         log_step("[dry-run] Skipping running services, committing, and submitting.")
         return "Updated (dry-run)"
 
+    log_step("Downloading updated source files...")
+    run_cmd(["osc", "service", "run", "download_files"], cwd=str(workdir))
+    run_cmd(["osc", "addremove"], cwd=str(workdir))
+
     log_step("Running OBS services locally to generate tarballs and spec updates...")
     ra_res = run_cmd(["osc", "service", "ra"], cwd=str(workdir), capture_output=True)
 
