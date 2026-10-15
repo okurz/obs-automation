@@ -1,3 +1,4 @@
+import re
 import subprocess
 from unittest.mock import MagicMock
 
@@ -340,7 +341,9 @@ def test_process_package_missing_service_file(mocker):
     mock_run_cmd.side_effect = side_effect
     mocker.patch("pathlib.Path.exists", return_value=False)
 
-    with pytest.raises(RuntimeError, match="Could not find current revision in _service or Version in .spec file."):
+    with pytest.raises(
+        RuntimeError, match=re.escape("Could not find current revision in _service or Version in .spec file.")
+    ):
         process_package(project="Project", package="cf-cli", anitya_id="123")
 
 
@@ -362,7 +365,9 @@ def test_process_package_service_file_missing_revision(mocker):
     mocker.patch("pathlib.Path.exists", return_value=True)
     mocker.patch("pathlib.Path.read_text", return_value='<service name="tar_scm"></service>')
 
-    with pytest.raises(RuntimeError, match="Could not find current revision in _service or Version in .spec file."):
+    with pytest.raises(
+        RuntimeError, match=re.escape("Could not find current revision in _service or Version in .spec file.")
+    ):
         process_package(project="Project", package="cf-cli", anitya_id="123")
 
 

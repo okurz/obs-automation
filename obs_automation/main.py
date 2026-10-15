@@ -40,7 +40,7 @@ def run_cmd(
 ) -> subprocess.CompletedProcess:
     """Run a subprocess command safely."""
     if state["verbose"]:
-        console.print(f"Running: {" ".join(cmd)}")
+        console.print(f"Running: {' '.join(cmd)}")
 
     # Hide output by default unless explicitly capturing for parsing or verbose is enabled
     if not state["verbose"] or capture_output:
@@ -301,6 +301,88 @@ def process_package(
     return "Updated"
 
 
+def _resolve_targets(
+    config: Path | None,
+    user: str | None,
+    project: str | None,
+    package: str | None,
+    anitya_id: str | None,
+    ignore: list[str],
+) -> tuple[list[tuple[str, str, str | None]], set[str]]:
+    """Resolve packages to process and the ignore set from the CLI arguments/config."""
+    ignore_set = set(ignore)
+    if config:
+        with config.open() as f:
+            data = yaml.safe_load(f)
+        ignore_set.update(data.get("ignore", []))
+        packages = [
+            (item["project"], item["package"], str(item["anitya_id"]) if item.get("anitya_id") else None)
+            for item in data.get("packages", [])
+        ]
+    elif user:
+        packages = [(proj, pkg, None) for proj, pkg in get_user_packages(user)]
+    elif project and package:
+        packages = [(project, package, anitya_id)]
+    else:
+        print("Error: Must provide either --config, --user, or both --project and --package.")
+        raise typer.Exit(code=1)
+    return packages, ignore_set
+
+
+def _process_packages(
+    packages_to_process: list[tuple[str, str, str | None]],
+    ignore_set: set[str],
+) -> list[tuple[str, str, str, str]]:
+    """Process all packages concurrently and collect their results."""
+    results: list[tuple[str, str, str, str]] = []
+    with (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress,
+        ThreadPoolExecutor(max_workers=4) as executor,
+    ):
+        futures = {}
+        for proj, pkg, a_id in packages_to_process:
+            if pkg in ignore_set:
+                results.append((proj, pkg, "Ignored", "Package is in ignore list"))
+                continue
+
+            task_id = progress.add_task(f"[cyan]{pkg}:[/cyan] Starting...", total=None)
+            future = executor.submit(process_package, proj, pkg, a_id, progress, task_id)
+            futures[future] = (proj, pkg, task_id)
+
+        for future in as_completed(futures):
+            proj, pkg, task_id = futures[future]
+            try:
+                status = future.result()
+                results.append((proj, pkg, status, ""))
+            except Exception as e:
+                msg = str(e) or repr(e)
+                results.append((proj, pkg, "Failed", msg))
+                progress.console.print(f"[red]Failed processing {proj}/{pkg}: {msg}[/red]")
+            finally:
+                progress.remove_task(task_id)
+    return results
+
+
+def _print_summary(results: list[tuple[str, str, str, str]]) -> None:
+    print("\n")
+    table = Table("Project", "Package", "Status", "Details", title="Auto-Bump Summary")
+    for proj, pkg, status, details in results:
+        if status == "Updated":
+            color = "green"
+        elif status.startswith("Skipped"):
+            color = "yellow"
+        elif status == "Ignored":
+            color = "blue"
+        else:
+            color = "red"
+        table.add_row(proj, pkg, f"[{color}]{status}[/{color}]", details)
+    console.print(table)
+
+
 @app.command()
 def main(
     project: str | None = typer.Option(None, help="Main OBS project (e.g. Cloud:Tools)"),
@@ -323,72 +405,12 @@ def main(
         state["dry_run"] = True
 
     actual_ignore = ignore if not isinstance(ignore, typer.models.OptionInfo) else []
-    ignore_set = set(actual_ignore)
-    results = []
 
     try:
-        packages_to_process = []
-        if config:
-            with config.open() as f:
-                data = yaml.safe_load(f)
-                config_ignore = data.get("ignore", [])
-                ignore_set.update(config_ignore)
-                for item in data.get("packages", []):
-                    a_id = str(item["anitya_id"]) if item.get("anitya_id") else None
-                    packages_to_process.append((item["project"], item["package"], a_id))
-        elif user:
-            packages_to_process = [(proj, pkg, None) for proj, pkg in get_user_packages(user)]
-        elif project and package:
-            packages_to_process.append((project, package, anitya_id))
-        else:
-            print("Error: Must provide either --config, --user, or both --project and --package.")
-            raise typer.Exit(code=1)
-
-        with (
-            Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-            ) as progress,
-            ThreadPoolExecutor(max_workers=4) as executor,
-        ):
-            futures = {}
-            for proj, pkg, a_id in packages_to_process:
-                if pkg in ignore_set:
-                    results.append((proj, pkg, "Ignored", "Package is in ignore list"))
-                    continue
-
-                task_id = progress.add_task(f"[cyan]{pkg}:[/cyan] Starting...", total=None)
-                future = executor.submit(process_package, proj, pkg, a_id, progress, task_id)
-                futures[future] = (proj, pkg, task_id)
-
-            for future in as_completed(futures):
-                proj, pkg, task_id = futures[future]
-                try:
-                    status = future.result()
-                    results.append((proj, pkg, status, ""))
-                except Exception as e:
-                    msg = str(e) or repr(e)
-                    results.append((proj, pkg, "Failed", msg))
-                    progress.console.print(f"[red]Failed processing {proj}/{pkg}: {msg}[/red]")
-                finally:
-                    progress.remove_task(task_id)
-
+        packages_to_process, ignore_set = _resolve_targets(config, user, project, package, anitya_id, actual_ignore)
+        results = _process_packages(packages_to_process, ignore_set)
         if results:
-            print("\n")
-            table = Table("Project", "Package", "Status", "Details", title="Auto-Bump Summary")
-            for proj, pkg, status, details in results:
-                if status == "Updated":
-                    color = "green"
-                elif status.startswith("Skipped"):
-                    color = "yellow"
-                elif status == "Ignored":
-                    color = "blue"
-                else:
-                    color = "red"
-                table.add_row(proj, pkg, f"[{color}]{status}[/{color}]", details)
-            console.print(table)
-
+            _print_summary(results)
     except typer.Exit as e:
         sys.exit(e.exit_code)
     except Exception as e:
