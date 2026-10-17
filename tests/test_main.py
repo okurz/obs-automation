@@ -335,6 +335,23 @@ def test_process_package_branch_fails_completely(mocker):
         process_package(project="Project", package="cf-cli", anitya_id="123")
 
 
+def test_process_package_branch_dead_link(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+
+    def side_effect(cmd, **_kwargs):
+        if cmd[0:2] == ["osc", "branch"]:
+            err = subprocess.CalledProcessError(1, cmd)
+            err.stderr = "openSUSE:Factory/bitlbee-steam: package 'bitlbee-steam' does not exist"
+            raise err
+        m = MagicMock()
+        m.stdout = ""
+        return m
+
+    mock_run_cmd.side_effect = side_effect
+    assert process_package(project="Project", package="bitlbee-steam", anitya_id="123") == "Skipped (dead link)"
+
+
 def test_process_package_branch_already_exists(mocker):
     mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
     mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
@@ -445,10 +462,16 @@ def test_process_package_missing_service_file(mocker):
     mock_run_cmd.side_effect = side_effect
     mocker.patch("pathlib.Path.exists", return_value=False)
 
-    with pytest.raises(
-        RuntimeError, match=re.escape("Could not find current revision in _service or Version in .spec file.")
-    ):
-        process_package(project="Project", package="cf-cli", anitya_id="123")
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Skipped (not a source package)"
+
+
+def test_process_package_anitya_lookup_not_found(mocker):
+    mocker.patch("obs_automation.main.get_obs_package_url", return_value="https://example.com")
+    mocker.patch(
+        "obs_automation.main.fetch_anitya_id_by_name_or_url",
+        side_effect=ValueError("Could not find Anitya project"),
+    )
+    assert process_package(project="Project", package="unknown") == "Skipped (no Anitya project)"
 
 
 def test_process_package_service_file_missing_revision(mocker):
@@ -841,6 +864,56 @@ def test_process_package_remove_obsolete_not_exist(mocker):
 
     assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
     mock_unlink.assert_not_called()
+
+
+def test_process_package_missing_runner_service(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+
+    def side_effect(cmd, **_kwargs):
+        if cmd == ["osc", "service", "ra"]:
+            err = subprocess.CalledProcessError(1, cmd)
+            err.stderr = "*** Error: Package ('obs-service-obs_scm',) is required for this operation"
+            err.stdout = ""
+            raise err
+        m = MagicMock()
+        m.stdout = ""
+        return m
+
+    mock_run_cmd.side_effect = side_effect
+    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith(".spec"))
+    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
+    mocker.patch("pathlib.Path.write_text")
+
+    assert (
+        process_package(project="Project", package="cf-cli", anitya_id="123")
+        == "Skipped (missing obs-service-obs_scm in runner)"
+    )
+
+
+def test_process_package_service_ra_unknown_error(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+
+    def side_effect(cmd, **_kwargs):
+        if cmd == ["osc", "service", "ra"]:
+            err = subprocess.CalledProcessError(1, cmd)
+            err.stderr = "general service error"
+            err.stdout = ""
+            raise err
+        m = MagicMock()
+        m.stdout = ""
+        return m
+
+    mock_run_cmd.side_effect = side_effect
+    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith(".spec"))
+    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
+    mocker.patch("pathlib.Path.write_text")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        process_package(project="Project", package="cf-cli", anitya_id="123")
 
 
 def test_fetch_anitya_id_by_name_or_url_packages_mapping(mocker):
