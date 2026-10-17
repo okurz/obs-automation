@@ -9,6 +9,7 @@ from obs_automation.main import (
     _get_branch_project,
     fetch_anitya_id_by_name_or_url,
     fetch_latest_version,
+    get_authenticated_user,
     get_obs_package_url,
     get_user_packages,
     main,
@@ -104,13 +105,50 @@ def test_fetch_anitya_id_by_name_or_url_missing(mocker):
         fetch_anitya_id_by_name_or_url("cf-cli", "https://github.com/cloudfoundry/cli.git")
 
 
-def test_get_user_packages(mocker):
+@pytest.mark.parametrize(
+    ("input_user", "expected_query_user"),
+    [
+        ("okurz", "okurz"),
+        ("okurz\r", "okurz"),
+        ("  okurz  ", "okurz"),
+    ],
+)
+def test_get_user_packages(mocker, input_user, expected_query_user):
     mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
     mock_res = MagicMock()
     mock_res.stdout = """<collection><package name="cf-cli" project="Cloud:Tools" /></collection>"""
     mock_run_cmd.return_value = mock_res
 
-    assert get_user_packages("okurz") == [("Cloud:Tools", "cf-cli")]
+    assert get_user_packages(input_user) == [("Cloud:Tools", "cf-cli")]
+    mock_run_cmd.assert_called_once_with(
+        ["osc", "api", f"/search/package?match=person/@userid='{expected_query_user}'"], capture_output=True
+    )
+
+
+@pytest.mark.parametrize(
+    ("env_value", "whois_stdout", "whois_returncode", "expected"),
+    [
+        ("botuser", None, None, "botuser"),
+        ("  botuser\r", None, None, "botuser"),
+        ("   ", 'okurz: "Oliver Kurz" <okurz@suse.com>\n', 0, "okurz"),
+        (None, 'okurz: "Oliver Kurz" <okurz@suse.com>\n', 0, "okurz"),
+        (None, ': "Anonymous"\n', 0, None),
+        (None, "no-colon-in-output\n", 0, None),
+        (None, "okurz: x\n", 1, None),
+    ],
+)
+def test_get_authenticated_user(mocker, monkeypatch, env_value, whois_stdout, whois_returncode, expected):
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mock_res = MagicMock()
+    mock_res.stdout = whois_stdout
+    mock_res.returncode = whois_returncode
+    mock_run_cmd.return_value = mock_res
+    if env_value is None:
+        monkeypatch.delenv("OBS_USER", raising=False)
+    else:
+        monkeypatch.setenv("OBS_USER", env_value)
+
+    assert get_authenticated_user() == expected
 
 
 def test_process_package_already_up_to_date(mocker):
@@ -227,6 +265,28 @@ def test_main_cli_user_error(mocker):
     mock_process.assert_called_once_with("P", "p", None, mocker.ANY, mocker.ANY)
 
 
+@pytest.mark.parametrize(
+    ("cli_project", "cli_package", "expected_targets"),
+    [
+        (None, "p", [("P", "p"), ("Q", "p")]),
+        ("P", None, [("P", "p"), ("P", "other")]),
+        ("P", "p", [("P", "p")]),
+        ("Nope", None, []),
+    ],
+)
+def test_main_cli_user_filters_by_project_and_package(mocker, cli_project, cli_package, expected_targets):
+    mocker.patch(
+        "obs_automation.main.get_user_packages",
+        return_value=[("P", "p"), ("Q", "p"), ("P", "other")],
+    )
+    mock_process = mocker.patch("obs_automation.main.process_package")
+
+    main(project=cli_project, package=cli_package, anitya_id=None, config=None, user="okurz")
+
+    actual_targets = sorted((call.args[0], call.args[1]) for call in mock_process.call_args_list)
+    assert actual_targets == sorted(expected_targets)
+
+
 def test_main_cli_missing_args():
     with pytest.raises(SystemExit) as e:
         main(project=None, package=None, anitya_id=None, config=None, user=None)
@@ -322,6 +382,34 @@ def test_process_package_branch_parsing_fails_no_fallback(mocker, monkeypatch):
 
     with pytest.raises(RuntimeError, match="Could not parse branched project name"):
         process_package(project="Project", package="cf-cli", anitya_id="123")
+
+
+def test_process_package_branch_parsing_fallback_via_whois(mocker, monkeypatch):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+
+    mock_branch_res = MagicMock()
+    mock_branch_res.stdout = "unexpected stdout format"
+    mock_whois_res = MagicMock()
+    mock_whois_res.stdout = 'whoisuser: "Who Is" <who@example.com>\n'
+    mock_whois_res.returncode = 0
+
+    def side_effect(cmd, **_kwargs):
+        if cmd[0:2] == ["osc", "branch"]:
+            return mock_branch_res
+        if cmd == ["osc", "whois"]:
+            return mock_whois_res
+        m = MagicMock()
+        m.stdout = ""
+        return m
+
+    mock_run_cmd.side_effect = side_effect
+    monkeypatch.delenv("OBS_USER", raising=False)
+    mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">v1.2.3</param>')
+    mocker.patch("pathlib.Path.write_text")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
 
 
 def test_process_package_missing_service_file(mocker):

@@ -136,7 +136,8 @@ def fetch_anitya_id_by_name_or_url(package_name: str, url: str | None = None) ->
 
 def get_user_packages(user: str) -> list[tuple[str, str]]:
     """Retrieve all packages maintained by a specific OBS user."""
-    res = run_cmd(["osc", "api", f"/search/package?match=person/@userid='{user}'"], capture_output=True)
+    query_user = user.strip()
+    res = run_cmd(["osc", "api", f"/search/package?match=person/@userid='{query_user}'"], capture_output=True)
     root = ElementTree.fromstring(res.stdout)
     packages = []
     for pkg in root.findall("package"):
@@ -145,6 +146,22 @@ def get_user_packages(user: str) -> list[tuple[str, str]]:
         if project and name:
             packages.append((project, name))
     return packages
+
+
+def get_authenticated_user() -> str | None:
+    """Determine the OBS account that osc authenticates as, if determinable.
+
+    Prefers the OBS_USER environment variable (used in CI) and falls back to
+    querying the server. This is deliberately independent of the account passed
+    to --user, which only selects whose maintained packages to enumerate.
+    """
+    env_user = os.environ.get("OBS_USER")
+    if env_user and env_user.strip():
+        return env_user.strip()
+    res = run_cmd(["osc", "whois"], capture_output=True, check=False)
+    if res.returncode != 0 or ":" not in res.stdout:
+        return None
+    return res.stdout.split(":", 1)[0].strip() or None
 
 
 def process_package(
@@ -189,9 +206,9 @@ def process_package(
                 raise RuntimeError(f"Failed to branch: {e.stderr}") from None
 
         if not branch_project:
-            user = os.environ.get("OBS_USER")
+            user = get_authenticated_user()
             if not user:
-                raise RuntimeError("Could not parse branched project name and OBS_USER not set.")
+                raise RuntimeError("Could not parse branched project name and no authenticated OBS user found.")
             branch_project = f"home:{user}:branches:{project}"
 
     log_step(f"Working with branched project: {branch_project}")
@@ -320,7 +337,11 @@ def _resolve_targets(
             for item in data.get("packages", [])
         ]
     elif user:
-        packages = [(proj, pkg, None) for proj, pkg in get_user_packages(user)]
+        packages = [
+            (proj, pkg, None)
+            for proj, pkg in get_user_packages(user)
+            if (project is None or proj == project) and (package is None or pkg == package)
+        ]
     elif project and package:
         packages = [(project, package, anitya_id)]
     else:
@@ -389,7 +410,9 @@ def main(
     package: str | None = typer.Option(None, help="OBS package name (e.g. cf-cli)"),
     anitya_id: str | None = typer.Option(None, help="Anitya project ID"),
     config: Path | None = typer.Option(None, help="Path to YAML config file"),
-    user: str | None = typer.Option(None, help="OBS username to process all maintained packages"),
+    user: str | None = typer.Option(
+        None, help="OBS username whose maintained packages to process (independent of the osc account used to submit)"
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
     dry_run: bool = typer.Option(
         False, "--dry-run", "--dry", help="Perform a dry run without making any changes in OBS"
