@@ -257,6 +257,22 @@ def test_main_cli_user(mocker):
     mock_process.assert_called_once_with("P", "p", None, mocker.ANY, mocker.ANY)
 
 
+def test_main_cli_user_with_config(mocker, tmp_path):
+    mocker.patch(
+        "obs_automation.main.get_user_packages",
+        return_value=[("P", "p1"), ("P", "p2"), ("P", "ignored_pkg")],
+    )
+    mock_process = mocker.patch("obs_automation.main.process_package")
+
+    config_file = tmp_path / "config.yml"
+    config_file.write_text("ignore:\n  - ignored_pkg\npackages:\n  - project: P\n    package: p1\n    anitya_id: 123")
+
+    main(project=None, package=None, anitya_id=None, config=config_file, user="okurz")
+    assert mock_process.call_count == 2
+    mock_process.assert_any_call("P", "p1", "123", mocker.ANY, mocker.ANY)
+    mock_process.assert_any_call("P", "p2", None, mocker.ANY, mocker.ANY)
+
+
 def test_main_cli_user_error(mocker):
     mocker.patch("obs_automation.main.get_user_packages", return_value=[("P", "p")])
     mock_process = mocker.patch("obs_automation.main.process_package", side_effect=Exception("Failed"))

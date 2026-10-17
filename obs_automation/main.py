@@ -332,20 +332,28 @@ def _resolve_targets(
 ) -> tuple[list[tuple[str, str, str | None]], set[str]]:
     """Resolve packages to process and the ignore set from the CLI arguments/config."""
     ignore_set = set(ignore)
+    config_packages: list[tuple[str, str, str | None]] = []
+    config_anitya_map: dict[tuple[str, str], str] = {}
     if config:
         with config.open() as f:
-            data = yaml.safe_load(f)
+            data = yaml.safe_load(f) or {}
         ignore_set.update(data.get("ignore", []))
+        for item in data.get("packages", []):
+            pkg_proj = item["project"]
+            pkg_name = item["package"]
+            a_id = str(item["anitya_id"]) if item.get("anitya_id") else None
+            config_packages.append((pkg_proj, pkg_name, a_id))
+            if a_id:
+                config_anitya_map[pkg_proj, pkg_name] = a_id
+
+    if user:
         packages = [
-            (item["project"], item["package"], str(item["anitya_id"]) if item.get("anitya_id") else None)
-            for item in data.get("packages", [])
-        ]
-    elif user:
-        packages = [
-            (proj, pkg, None)
+            (proj, pkg, config_anitya_map.get((proj, pkg)))
             for proj, pkg in get_user_packages(user)
             if (project is None or proj == project) and (package is None or pkg == package)
         ]
+    elif config:
+        packages = config_packages
     elif project and package:
         packages = [(project, package, anitya_id)]
     else:
