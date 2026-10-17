@@ -26,5 +26,5 @@ jobs:
       - name: Run Auto-bump script
         env:
           OBS_USER: ${{ secrets.OBS_USER }}
-        # Running directly via Python to process all maintained packages of the user
-        run: python3 obs_automation/main.py --user ${{ secrets.OBS_USER }}
+        # OBS_USER/OBS_PASSWORD authenticate; OBS_MAINTAINER is the enumerated user
+        run: python3 obs_automation/main.py --user ${{ vars.OBS_MAINTAINER }}
