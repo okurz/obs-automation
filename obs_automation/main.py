@@ -247,6 +247,30 @@ def _inspect_bump_target(workdir: Path, package: str, latest_version: str, log_s
     )
 
 
+OBS_SERVICE_DIRS = (Path("/usr/lib/obs/service"), Path("/usr/libexec/obs/service"))
+
+
+def get_missing_services(
+    service_file: Path,
+    service_dirs: tuple[Path, ...] = OBS_SERVICE_DIRS,
+) -> list[str]:
+    """Check if all services requested in _service are installed on the system."""
+    if not service_file.exists():
+        return []
+    try:
+        root = ElementTree.fromstring(service_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    missing = []
+    for service in root.findall("service"):
+        name = service.get("name")
+        if not name:
+            continue
+        if any(d.exists() for d in service_dirs) and not any((d / name).exists() for d in service_dirs):
+            missing.append(name)
+    return missing
+
+
 def _run_services_and_submit(
     workdir: Path,
     branch_project: str,
@@ -255,6 +279,13 @@ def _run_services_and_submit(
     log_step: Any,
 ) -> str:
     """Run local source services, commit changes, and create submit request."""
+    service_file = workdir / "_service"
+    missing_services = get_missing_services(service_file)
+    if missing_services:
+        missing_names = ", ".join(f"obs-service-{s}" for s in missing_services)
+        log_step(f"Runner is missing required OBS service(s): {missing_names}. Skipping.")
+        return f"Skipped (missing {missing_names} in runner)"
+
     log_step("Downloading updated source files...")
     run_cmd(["osc", "service", "run", "download_files"], cwd=str(workdir))
     run_cmd(["osc", "addremove"], cwd=str(workdir))

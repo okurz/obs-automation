@@ -10,6 +10,7 @@ from obs_automation.main import (
     fetch_anitya_id_by_name_or_url,
     fetch_latest_version,
     get_authenticated_user,
+    get_missing_services,
     get_obs_package_url,
     get_user_packages,
     main,
@@ -1030,3 +1031,55 @@ def test_main_cli_dry_run(mocker):
     main(project="Proj", package="pkg", anitya_id="123", config=None, user=None, dry_run=True)
     assert state.get("dry_run") is True
     state["dry_run"] = False
+
+
+@pytest.mark.parametrize(
+    ("xml_content", "service_dirs_exist", "installed_services", "expected_missing"),
+    [
+        (None, False, [], []),
+        ("not-valid-xml", True, [], []),
+        ("<services><service/></services>", True, [], []),
+        ('<services><service name="tar_scm"/></services>', False, [], []),
+        ('<services><service name="tar_scm"/></services>', True, ["tar_scm"], []),
+        (
+            '<services><service name="tar_scm"/><service name="obs_scm"/></services>',
+            True,
+            ["tar_scm"],
+            ["obs_scm"],
+        ),
+    ],
+)
+def test_get_missing_services(tmp_path, xml_content, service_dirs_exist, installed_services, expected_missing):
+    service_file = tmp_path / "_service"
+    if xml_content is not None:
+        service_file.write_text(xml_content, encoding="utf-8")
+
+    bin_dir = tmp_path / "services_bin"
+    if service_dirs_exist:
+        bin_dir.mkdir()
+        for svc in installed_services:
+            (bin_dir / svc).write_text("dummy", encoding="utf-8")
+
+    result = get_missing_services(service_file, service_dirs=(bin_dir,))
+    assert result == expected_missing
+
+
+def test_process_package_preflight_missing_service(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+
+    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith("_service"))
+    mocker.patch(
+        "pathlib.Path.read_text",
+        return_value='<services><service name="tar_scm"><param name="revision">v1.2.3</param></service></services>',
+    )
+    mocker.patch("pathlib.Path.write_text")
+    mocker.patch("obs_automation.main.get_missing_services", return_value=["format_spec_file"])
+
+    assert (
+        process_package(project="Project", package="cf-cli", anitya_id="123")
+        == "Skipped (missing obs-service-format_spec_file in runner)"
+    )
+    for call in mock_run_cmd.call_args_list:
+        assert call.args[0][0:3] != ["osc", "service", "ra"]
