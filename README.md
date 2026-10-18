@@ -19,6 +19,8 @@ A convenient wrapper script is provided in the top directory to execute the tool
 ./auto-bump --project Cloud:Tools --package cf-cli --anitya-id 385503
 ```
 
+Running with no target arguments (`--config`, `--user`, or `--project`/`--package`) defaults to the packages maintained by the authenticated OBS user (`osc whois`), so `./auto-bump --dry-run` works out of the box.
+
 You can view the full list of arguments with:
 ```bash
 ./auto-bump --help

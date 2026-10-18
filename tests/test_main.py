@@ -304,10 +304,20 @@ def test_main_cli_user_filters_by_project_and_package(mocker, cli_project, cli_p
     assert actual_targets == sorted(expected_targets)
 
 
-def test_main_cli_missing_args():
+def test_main_cli_missing_args(mocker):
+    mocker.patch("obs_automation.main.get_authenticated_user", return_value=None)
     with pytest.raises(SystemExit) as e:
         main(project=None, package=None, anitya_id=None, config=None, user=None)
     assert e.value.code == 1
+
+
+def test_main_cli_default_user(mocker):
+    mocker.patch("obs_automation.main.get_authenticated_user", return_value="okurz")
+    mocker.patch("obs_automation.main.get_user_packages", return_value=[("P", "p")])
+    mock_process = mocker.patch("obs_automation.main.process_package")
+
+    main(project=None, package=None, anitya_id=None, config=None, user=None)
+    mock_process.assert_called_once_with("P", "p", None, mocker.ANY, mocker.ANY)
 
 
 def test_main_cli_exception(mocker):

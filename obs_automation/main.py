@@ -428,6 +428,20 @@ def process_package(
     return _run_services_and_submit(workdir, branch_project, package, target.latest_tag, log_step)
 
 
+def _enumerate_user_packages(
+    target_user: str,
+    project: str | None,
+    package: str | None,
+    config_anitya_map: dict[tuple[str, str], str],
+) -> list[tuple[str, str, str | None]]:
+    """Enumerate a user's maintained packages, filtered by optional project/package."""
+    return [
+        (proj, pkg, config_anitya_map.get((proj, pkg)))
+        for proj, pkg in get_user_packages(target_user)
+        if (project is None or proj == project) and (package is None or pkg == package)
+    ]
+
+
 def _resolve_targets(
     config: Path | None,
     user: str | None,
@@ -453,18 +467,17 @@ def _resolve_targets(
                 config_anitya_map[pkg_proj, pkg_name] = a_id
 
     if user:
-        packages = [
-            (proj, pkg, config_anitya_map.get((proj, pkg)))
-            for proj, pkg in get_user_packages(user)
-            if (project is None or proj == project) and (package is None or pkg == package)
-        ]
+        packages = _enumerate_user_packages(user, project, package, config_anitya_map)
     elif config:
         packages = config_packages
     elif project and package:
         packages = [(project, package, anitya_id)]
     else:
-        print("Error: Must provide either --config, --user, or both --project and --package.")
-        raise typer.Exit(code=1)
+        auth_user = get_authenticated_user()
+        if not auth_user:
+            print("Error: Must provide --config, --user, --project and --package, or be logged in to OBS.")
+            raise typer.Exit(code=1)
+        packages = _enumerate_user_packages(auth_user, project, package, config_anitya_map)
     return packages, ignore_set
 
 
@@ -529,7 +542,11 @@ def main(
     anitya_id: str | None = typer.Option(None, help="Anitya project ID"),
     config: Path | None = typer.Option(None, help="Path to YAML config file"),
     user: str | None = typer.Option(
-        None, help="OBS username whose maintained packages to process (independent of the osc account used to submit)"
+        None,
+        help=(
+            "OBS username whose maintained packages to process (independent of the osc account used to submit). "
+            "Defaults to the authenticated OBS user when no target is given."
+        ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
     dry_run: bool = typer.Option(
