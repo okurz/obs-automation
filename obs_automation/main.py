@@ -454,6 +454,16 @@ def process_package(
     return _run_services_and_submit(workdir, branch_project, package, target.latest_tag, log_step)
 
 
+def _describe_oss_failure(exc: Exception, action: str) -> str:
+    """Translate an osc failure into the server condition, with retry and credential hints."""
+    output = f"{exc.stdout or ''}{exc.stderr or ''}" if isinstance(exc, subprocess.CalledProcessError) else ""
+    match = re.search(r"Server returned an error: (HTTP Error \d{3}: [^\n]+)", output)
+    condition = match.group(1) if match else str(exc)
+    attempts = f" after {OSC_READ_ONLY_ATTEMPTS} attempts" if _is_transient_failure(exc) else ""
+    hint = " (check OBS_USER/OBS_PASSWORD secrets)" if re.search(r"HTTP Error 40[13]\b", condition) else ""
+    return f"{action} failed{attempts}: {condition}{hint}"
+
+
 def _enumerate_user_packages(
     target_user: str,
     project: str | None,
@@ -461,9 +471,14 @@ def _enumerate_user_packages(
     config_anitya_map: dict[tuple[str, str], str],
 ) -> list[tuple[str, str, str | None]]:
     """Enumerate a user's maintained packages, filtered by optional project/package."""
+    try:
+        packages = get_user_packages(target_user)
+    except Exception as e:
+        action = f"OBS package enumeration for user '{target_user}'"
+        raise RuntimeError(_describe_oss_failure(e, action)) from e
     return [
         (proj, pkg, config_anitya_map.get((proj, pkg)))
-        for proj, pkg in get_user_packages(target_user)
+        for proj, pkg in packages
         if (project is None or proj == project) and (package is None or pkg == package)
     ]
 

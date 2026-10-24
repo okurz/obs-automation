@@ -430,6 +430,40 @@ def test_main_cli_exception(mocker):
     assert e.value.code == 1
 
 
+@pytest.mark.parametrize(
+    ("side_effect", "expected_condition", "expected_extra"),
+    [
+        (
+            _osc_error("Server returned an error: HTTP Error 503: Service Unavailable"),
+            "HTTP Error 503: Service Unavailable",
+            "after 4 attempts",
+        ),
+        (
+            _osc_error("Server returned an error: HTTP Error 401: Unauthorized"),
+            "HTTP Error 401: Unauthorized",
+            "check OBS_USER/OBS_PASSWORD secrets",
+        ),
+        (
+            _osc_error("Server returned an error: HTTP Error 404: Not Found"),
+            "HTTP Error 404: Not Found",
+            "",
+        ),
+        (RuntimeError("OBS is unreachable"), "OBS is unreachable", ""),
+    ],
+)
+def test_main_cli_reports_oss_failure_condition(mocker, capsys, side_effect, expected_condition, expected_extra):
+    mocker.patch("obs_automation.main.get_user_packages", side_effect=side_effect)
+
+    with pytest.raises(SystemExit) as e:
+        main(project=None, package=None, anitya_id=None, config=None, user="okurz")
+
+    assert e.value.code == 1
+    captured = capsys.readouterr().out
+    assert "OBS package enumeration for user 'okurz' failed" in captured
+    assert expected_condition in captured
+    assert expected_extra in captured
+
+
 def test_process_package_retries_branch_on_transient_failure(mocker):
     mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
     mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
