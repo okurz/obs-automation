@@ -15,10 +15,16 @@ jobs:
           cat <<EOF > ~/.config/osc/oscrc
           [general]
           apiurl = https://api.opensuse.org
+          http_retries = 5
           [https://api.opensuse.org]
           user = ${{ secrets.OBS_USER }}
           pass = ${{ secrets.OBS_PASSWORD }}
           EOF
+
+      # osc silently ignores unknown [general] keys, so assert the knob is honoured
+      - name: Verify OBS retry config
+        run: |
+          python3 -c "import osc.conf as c; c.get_config(override_conffile='$HOME/.config/osc/oscrc'); assert int(c.config['http_retries']) >= 5, c.config['http_retries']"
 
       - name: Checkout automation repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
