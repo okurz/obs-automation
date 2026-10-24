@@ -7,6 +7,7 @@ from rich.table import Table
 
 from obs_automation.main import (
     _get_branch_project,
+    _is_transient_failure,
     fetch_anitya_id_by_name_or_url,
     fetch_latest_version,
     get_authenticated_user,
@@ -16,8 +17,22 @@ from obs_automation.main import (
     main,
     process_package,
     run_cmd,
+    run_obs_readonly,
     state,
 )
+
+
+def _osc_error(stderr: str) -> subprocess.CalledProcessError:
+    err = subprocess.CalledProcessError(1, ["osc", "api"])
+    err.stdout = ""
+    err.stderr = stderr
+    return err
+
+
+def _res(stdout: str) -> MagicMock:
+    mock_res = MagicMock()
+    mock_res.stdout = stdout
+    return mock_res
 
 
 def test_fetch_latest_version(mocker):
@@ -104,6 +119,94 @@ def test_fetch_anitya_id_by_name_or_url_missing(mocker):
 
     with pytest.raises(ValueError, match="Could not find Anitya project"):
         fetch_anitya_id_by_name_or_url("cf-cli", "https://github.com/cloudfoundry/cli.git")
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    [
+        ("", "Server returned an error: HTTP Error 503: Service Unavailable", True),
+        ("", "Server returned an error: HTTP Error 502: Bad Gateway", True),
+        ("", "Server returned an error: HTTP Error 504: Gateway Time-out", True),
+        ("", "Server returned an error: HTTP Error 500: Internal Server Error", True),
+        ("Server returned an error: HTTP Error 503: Service Unavailable", "", True),
+        ("", "urlopen error: Connection refused", True),
+        ("", "Remote host closed the connection: Connection reset by peer", True),
+        ("", "socket operation timed out", True),
+        ("", "Temporary failure in name resolution", True),
+        ("", "Server returned an error: HTTP Error 401: Unauthorized", False),
+        ("", "Server returned an error: HTTP Error 404: Not Found", False),
+        ("", "openSUSE:Factory/x: package 'x' does not exist", False),
+        ("", "", False),
+    ],
+)
+def test_is_transient_failure_matches_osc_output(stdout, stderr, expected):
+    err = _osc_error(stderr)
+    err.stdout = stdout
+    assert _is_transient_failure(err) is expected
+
+
+def test_is_transient_failure_rejects_non_osc_errors():
+    assert _is_transient_failure(RuntimeError("HTTP Error 503: Service Unavailable")) is False
+
+
+def test_run_obs_readonly_passes_kwargs_to_run_cmd(mocker, tmp_path):
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    assert run_obs_readonly(["osc", "update"], cwd=str(tmp_path)) is mock_run_cmd.return_value
+    mock_run_cmd.assert_called_once_with(["osc", "update"], cwd=str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("stderr", "failures", "recovers", "expected_calls", "expected_sleeps"),
+    [
+        ("Server returned an error: HTTP Error 503: Service Unavailable", 1, True, 2, 1),
+        ("Server returned an error: HTTP Error 503: Service Unavailable", 4, False, 4, 3),
+        ("Server returned an error: HTTP Error 401: Unauthorized", 1, False, 1, 0),
+    ],
+)
+def test_get_user_packages_retries_transient_osc_failures(
+    mocker, stderr, failures, recovers, expected_calls, expected_sleeps
+):
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mock_sleep = mocker.patch("tenacity.nap.time.sleep")
+    errors = [_osc_error(stderr) for _ in range(failures)]
+    mock_run_cmd.side_effect = [
+        *errors,
+        _res('<collection><package name="cf-cli" project="Cloud:Tools" /></collection>'),
+    ]
+
+    if recovers:
+        assert get_user_packages("okurz") == [("Cloud:Tools", "cf-cli")]
+    else:
+        with pytest.raises(subprocess.CalledProcessError):
+            get_user_packages("okurz")
+
+    assert mock_run_cmd.call_count == expected_calls
+    assert mock_sleep.call_count == expected_sleeps
+
+
+@pytest.mark.parametrize(
+    ("side_effects", "expected_url", "expected_calls"),
+    [
+        (
+            [
+                _osc_error("Server returned an error: HTTP Error 503: Service Unavailable"),
+                _res(
+                    '<package name="cf-cli" project="Cloud:Tools"><url>https://github.com/cloudfoundry/cli.git</url></package>'
+                ),
+            ],
+            "https://github.com/cloudfoundry/cli.git",
+            2,
+        ),
+        ([_osc_error("Server returned an error: HTTP Error 404: Not Found")], None, 1),
+        ([_osc_error("Server returned an error: HTTP Error 503: Service Unavailable")] * 4, None, 4),
+    ],
+)
+def test_get_obs_package_url_retries_transient_failures(mocker, side_effects, expected_url, expected_calls):
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd", side_effect=side_effects)
+    mocker.patch("tenacity.nap.time.sleep")
+
+    assert get_obs_package_url("Cloud:Tools", "cf-cli") == expected_url
+    assert mock_run_cmd.call_count == expected_calls
 
 
 @pytest.mark.parametrize(
@@ -325,6 +428,54 @@ def test_main_cli_exception(mocker):
     with pytest.raises(SystemExit) as e:
         main(project=None, package=None, anitya_id=None, config=None, user="okurz")
     assert e.value.code == 1
+
+
+def test_process_package_retries_branch_on_transient_failure(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mock_sleep = mocker.patch("tenacity.nap.time.sleep")
+    mock_branch_res = MagicMock()
+    mock_branch_res.stdout = "home:test:branches:Project/cf-cli"
+    branch_calls = []
+
+    def side_effect(cmd, **_kwargs):
+        if cmd[0:2] == ["osc", "branch"]:
+            branch_calls.append(cmd)
+            if len(branch_calls) == 1:
+                raise _osc_error("Server returned an error: HTTP Error 503: Service Unavailable")
+            return mock_branch_res
+        m = MagicMock()
+        m.stdout = ""
+        return m
+
+    mock_run_cmd.side_effect = side_effect
+    mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">v1.2.3</param>')
+    mocker.patch("pathlib.Path.write_text")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
+    assert len(branch_calls) == 2
+    assert mock_sleep.call_count == 1
+
+
+def test_submit_and_service_commands_are_not_retried(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
+    mock_readonly = mocker.patch("obs_automation.main.run_obs_readonly", side_effect=mock_run_cmd)
+    mock_branch_res = MagicMock()
+    mock_branch_res.stdout = "home:test:branches:Project/cf-cli"
+    mock_run_cmd.side_effect = lambda cmd, **_kwargs: mock_branch_res if cmd[0:2] == ["osc", "branch"] else _res("")
+
+    mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch("pathlib.Path.read_text", return_value='<param name="revision">v1.2.3</param>')
+    mocker.patch("pathlib.Path.write_text")
+
+    assert process_package(project="Project", package="cf-cli", anitya_id="123") == "Updated"
+
+    wrapped = [cmd[0:2] for cmd in (c.args[0] for c in mock_readonly.call_args_list)]
+    assert wrapped == [["osc", "branch"], ["osc", "update"]]
+    submitted = [c.args[0][1] for c in mock_run_cmd.call_args_list if c.args[0][1] in {"ci", "sr"}]
+    assert submitted == ["ci", "sr"]
 
 
 def test_process_package_branch_fails_completely(mocker):
@@ -592,14 +743,6 @@ def test_main_cli_verbose_and_ignore(mocker):
     assert state["verbose"] is True
     mock_process.assert_not_called()
     state["verbose"] = False
-
-
-def test_get_obs_package_url_non_zero_exit(mocker):
-    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
-    mock_res = MagicMock()
-    mock_res.returncode = 1
-    mock_run_cmd.return_value = mock_res
-    assert get_obs_package_url("Project", "Package") is None
 
 
 def test_fetch_anitya_id_by_name_or_url_multiple_names_loop_continue(mocker):

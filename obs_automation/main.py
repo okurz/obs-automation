@@ -17,7 +17,7 @@ from defusedxml import ElementTree  # type: ignore[import-untyped]
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_fixed, wait_random_exponential
 
 app = typer.Typer()
 console = Console()
@@ -63,6 +63,31 @@ def run_cmd(
         return res
 
 
+TRANSIENT_OSC_RE = re.compile(
+    r"HTTP Error 5\d\d\b|Connection refused|Connection reset by peer|timed out|"
+    r"Temporary failure in name resolution"
+)
+OSC_READ_ONLY_ATTEMPTS = 4
+
+
+def _is_transient_failure(exc: BaseException) -> bool:
+    """Detect transient OBS or network conditions in the captured output of a failed osc call."""
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return False
+    return bool(TRANSIENT_OSC_RE.search(f"{exc.stdout or ''}{exc.stderr or ''}"))
+
+
+@retry(
+    retry=retry_if_exception(_is_transient_failure),
+    wait=wait_random_exponential(min=5, max=60),
+    stop=stop_after_attempt(OSC_READ_ONLY_ATTEMPTS),
+    reraise=True,
+)
+def run_obs_readonly(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run an idempotent, read-only osc command, retrying transient OBS failures."""
+    return run_cmd(cmd, **kwargs)
+
+
 def _get_branch_project(stdout: str) -> str | None:
     for line in stdout.splitlines():
         match = re.search(r"([^\s:]+:[^\s]+)/[^\s]+", line)
@@ -73,8 +98,9 @@ def _get_branch_project(stdout: str) -> str | None:
 
 def get_obs_package_url(project: str, package: str) -> str | None:
     """Extract upstream URL from OBS meta configuration."""
-    res = run_cmd(["osc", "api", f"/source/{project}/{package}/_meta"], capture_output=True, check=False)
-    if res.returncode != 0:
+    try:
+        res = run_obs_readonly(["osc", "api", f"/source/{project}/{package}/_meta"], capture_output=True)
+    except subprocess.CalledProcessError:
         return None
     root = ElementTree.fromstring(res.stdout)
     url_elem = root.find("url")
@@ -138,7 +164,7 @@ def fetch_anitya_id_by_name_or_url(package_name: str, url: str | None = None) ->
 def get_user_packages(user: str) -> list[tuple[str, str]]:
     """Retrieve all packages maintained by a specific OBS user."""
     query_user = user.strip()
-    res = run_cmd(["osc", "api", f"/search/package?match=person/@userid='{query_user}'"], capture_output=True)
+    res = run_obs_readonly(["osc", "api", f"/search/package?match=person/@userid='{query_user}'"], capture_output=True)
     root = ElementTree.fromstring(res.stdout)
     packages = []
     for pkg in root.findall("package"):
@@ -363,7 +389,7 @@ def process_package(
         branch_project = project
     else:
         try:
-            branch_res = run_cmd(["osc", "branch", project, package], capture_output=True)
+            branch_res = run_obs_readonly(["osc", "branch", project, package], capture_output=True)
             branch_project = _get_branch_project(branch_res.stdout)
         except subprocess.CalledProcessError as e:
             if "does not exist" in e.stderr:
@@ -388,10 +414,10 @@ def process_package(
     workdir = Path(branch_project) / package
 
     if workdir.exists():
-        run_cmd(["osc", "update"], cwd=str(workdir))
+        run_obs_readonly(["osc", "update"], cwd=str(workdir))
     else:
         # Check out into the branch_project directory
-        run_cmd(["osc", "checkout", branch_project, package])
+        run_obs_readonly(["osc", "checkout", branch_project, package])
 
     target = _inspect_bump_target(workdir, package, latest_version, log_step)
     if target.skip_reason:
