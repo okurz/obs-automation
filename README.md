@@ -6,7 +6,7 @@ It monitors [Anitya](https://release-monitoring.org/) for upstream releases and 
 ## Features
 
 - **Decoupled from GitHub Rate Limits:** Leverages the open-source Anitya ecosystem.
-- **Resilient:** Uses HTTPx with Tenacity for network retries.
+- **Resilient:** Uses HTTPx with Tenacity for network retries; transient OBS failures are retried on read-only `osc` calls (4 attempts, exponential backoff), and the CI job runs with `--verbose` so each `osc` command is logged.
 - **Stateless/Headless:** Runs completely isolated in CI without requiring local OS state.
 - **Safe:** Branches the target project, ensuring human maintainers review the changes via Submit Requests.
 

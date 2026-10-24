@@ -34,7 +34,7 @@ jobs:
           OBS_USER: ${{ secrets.OBS_USER }}
         # OBS_USER/OBS_PASSWORD authenticate; OBS_MAINTAINER is the enumerated user
         run: |
-          python3 obs_automation/main.py --user ${{ vars.OBS_MAINTAINER }} \
+          python3 obs_automation/main.py --verbose --user ${{ vars.OBS_MAINTAINER }} \
             --ignore bitlbee-steam \
             --ignore openqa-review \
             --ignore cf-cli \
