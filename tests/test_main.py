@@ -8,6 +8,7 @@ from rich.table import Table
 from obs_automation.main import (
     _get_branch_project,
     _is_transient_failure,
+    _service_names,
     fetch_anitya_id_by_name_or_url,
     fetch_latest_version,
     get_authenticated_user,
@@ -1270,3 +1271,70 @@ def test_process_package_preflight_missing_service(mocker):
     )
     for call in mock_run_cmd.call_args_list:
         assert call.args[0][0:3] != ["osc", "service", "ra"]
+
+
+@pytest.mark.parametrize(
+    ("service_content", "expect_download_files"),
+    [
+        (
+            '<services><service name="tar_scm"><param name="revision">v1.2.3</param></service></services>',
+            False,
+        ),
+        (
+            (
+                '<services><service name="tar_scm"><param name="revision">v1.2.3</param></service>'
+                '<service name="download_files"/></services>'
+            ),
+            True,
+        ),
+    ],
+)
+def test_process_package_download_files_conditional_on_service(mocker, service_content, expect_download_files):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd", return_value=_res(""))
+
+    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith("_service"))
+    mocker.patch("pathlib.Path.read_text", return_value=service_content)
+    mocker.patch("pathlib.Path.write_text")
+
+    res = process_package(project="Project", package="cf-cli", anitya_id="123")
+    assert res == "Updated"
+
+    called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list]
+    download_cmd = ["osc", "service", "run", "download_files"]
+    if expect_download_files:
+        assert download_cmd in called_cmds
+    else:
+        assert download_cmd not in called_cmds
+
+    assert ["osc", "addremove"] in called_cmds
+    assert ["osc", "service", "ra"] in called_cmds
+
+
+def test_process_package_spec_bump_skips_download_files(mocker):
+    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
+    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
+    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd", return_value=_res(""))
+
+    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith(".spec"))
+    mocker.patch("pathlib.Path.read_text", return_value="Version: 1.2.3")
+    mocker.patch("pathlib.Path.write_text")
+
+    res = process_package(project="Project", package="cf-cli", anitya_id="123")
+    assert res == "Updated"
+
+    called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list]
+    assert ["osc", "service", "run", "download_files"] not in called_cmds
+    assert ["osc", "addremove"] in called_cmds
+    assert ["osc", "service", "ra"] in called_cmds
+
+
+def test_service_names_missing_file(tmp_path):
+    assert _service_names(tmp_path / "nonexistent") == []
+
+
+def test_service_names_invalid_xml(tmp_path):
+    f = tmp_path / "_service"
+    f.write_text("not-valid-xml", encoding="utf-8")
+    assert _service_names(f) == []
