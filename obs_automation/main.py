@@ -298,6 +298,12 @@ def get_missing_services(
     return [name for name in service_names if not any((d / name).exists() for d in service_dirs)]
 
 
+def _missing_required_service(output: str) -> str | None:
+    """Extract the required OBS service package name from command error output."""
+    match = re.search(r"Package\s+[^a-zA-Z0-9_-]*([a-zA-Z0-9_-]+).*?is required", output)
+    return match.group(1) if match else None
+
+
 def _run_services_and_submit(
     workdir: Path,
     branch_project: str,
@@ -316,17 +322,22 @@ def _run_services_and_submit(
 
     if "download_files" in service_names:
         log_step("Downloading updated source files...")
-        run_cmd(["osc", "service", "run", "download_files"], cwd=str(workdir))
+        try:
+            run_cmd(["osc", "service", "run", "download_files"], cwd=str(workdir))
+        except subprocess.CalledProcessError as e:
+            missing_pkg = _missing_required_service((e.stderr or "") + (e.stdout or ""))
+            if missing_pkg:
+                log_step(f"Runner is missing required OBS service package: {missing_pkg}. Skipping.")
+                return f"Skipped (missing {missing_pkg} in runner)"
+            raise
     run_cmd(["osc", "addremove"], cwd=str(workdir))
 
     log_step("Running OBS services locally to generate tarballs and spec updates...")
     try:
         ra_res = run_cmd(["osc", "service", "ra"], cwd=str(workdir), capture_output=True)
     except subprocess.CalledProcessError as e:
-        output = (e.stderr or "") + (e.stdout or "")
-        match = re.search(r"Package\s+[^a-zA-Z0-9_-]*([a-zA-Z0-9_-]+).*?is required", output)
-        if match:
-            missing_pkg = match.group(1)
+        missing_pkg = _missing_required_service((e.stderr or "") + (e.stdout or ""))
+        if missing_pkg:
             log_step(f"Runner is missing required OBS service package: {missing_pkg}. Skipping.")
             return f"Skipped (missing {missing_pkg} in runner)"
         raise

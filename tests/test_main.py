@@ -8,6 +8,7 @@ from rich.table import Table
 from obs_automation.main import (
     _get_branch_project,
     _is_transient_failure,
+    _missing_required_service,
     _service_names,
     fetch_anitya_id_by_name_or_url,
     fetch_latest_version,
@@ -1055,15 +1056,44 @@ def test_process_package_remove_obsolete_not_exist(mocker):
     mock_unlink.assert_not_called()
 
 
-def test_process_package_missing_runner_service(mocker):
+@pytest.mark.parametrize(
+    ("target_cmd", "stderr", "expect_skip", "expected_result"),
+    [
+        (
+            ["osc", "service", "ra"],
+            "*** Error: Package ('obs-service-obs_scm',) is required for this operation",
+            True,
+            "Skipped (missing obs-service-obs_scm in runner)",
+        ),
+        (
+            ["osc", "service", "ra"],
+            "general service error",
+            False,
+            None,
+        ),
+        (
+            ["osc", "service", "run", "download_files"],
+            "*** Error: Package ('obs-service-download_files',) is required for this operation",
+            True,
+            "Skipped (missing obs-service-download_files in runner)",
+        ),
+        (
+            ["osc", "service", "run", "download_files"],
+            "general download error",
+            False,
+            None,
+        ),
+    ],
+)
+def test_process_package_missing_service_package_handling(mocker, target_cmd, stderr, expect_skip, expected_result):
     mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
     mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
     mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
 
     def side_effect(cmd, **_kwargs):
-        if cmd == ["osc", "service", "ra"]:
+        if cmd == target_cmd:
             err = subprocess.CalledProcessError(1, cmd)
-            err.stderr = "*** Error: Package ('obs-service-obs_scm',) is required for this operation"
+            err.stderr = stderr
             err.stdout = ""
             raise err
         m = MagicMock()
@@ -1071,38 +1101,24 @@ def test_process_package_missing_runner_service(mocker):
         return m
 
     mock_run_cmd.side_effect = side_effect
-    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith(".spec"))
-    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
-    mocker.patch("pathlib.Path.write_text")
-
-    assert (
-        process_package(project="Project", package="cf-cli", anitya_id="123")
-        == "Skipped (missing obs-service-obs_scm in runner)"
+    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith("_service"))
+    mocker.patch(
+        "pathlib.Path.read_text",
+        return_value=(
+            '<services><service name="download_files"><param name="revision">v1.2.3</param></service></services>'
+        ),
     )
-
-
-def test_process_package_service_ra_unknown_error(mocker):
-    mocker.patch("obs_automation.main.fetch_latest_version", return_value="v1.2.4")
-    mock_run_cmd = mocker.patch("obs_automation.main.run_cmd")
-    mocker.patch("obs_automation.main._get_branch_project", return_value="home:test:branches:Project")
-
-    def side_effect(cmd, **_kwargs):
-        if cmd == ["osc", "service", "ra"]:
-            err = subprocess.CalledProcessError(1, cmd)
-            err.stderr = "general service error"
-            err.stdout = ""
-            raise err
-        m = MagicMock()
-        m.stdout = ""
-        return m
-
-    mock_run_cmd.side_effect = side_effect
-    mocker.patch("pathlib.Path.exists", lambda self: str(self).endswith(".spec"))
-    mocker.patch("pathlib.Path.read_text", return_value="Version:        1.2.3")
     mocker.patch("pathlib.Path.write_text")
 
-    with pytest.raises(subprocess.CalledProcessError):
-        process_package(project="Project", package="cf-cli", anitya_id="123")
+    if expect_skip:
+        assert process_package(project="Project", package="cf-cli", anitya_id="123") == expected_result
+    else:
+        with pytest.raises(subprocess.CalledProcessError):
+            process_package(project="Project", package="cf-cli", anitya_id="123")
+
+
+def test_missing_required_service_no_match():
+    assert _missing_required_service("some arbitrary error without pattern") is None
 
 
 def test_fetch_anitya_id_by_name_or_url_packages_mapping(mocker):
